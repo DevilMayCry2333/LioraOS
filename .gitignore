@@ -1,0 +1,19 @@
+# ── 配置文件（含 API Key） ──
+.liora_config.json
+apps/.liora_config.json
+
+# ── 运行时数据（世界状态、居民存档、对话日志） ──
+data/
+apps/data/
+examples/data/
+evolution/
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# ── IDE ──
+.idea/
+.vscode/
