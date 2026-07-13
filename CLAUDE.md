@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-AIOS — 通用智能运行内核。不定义任何世界观，只提供运行机制。总代码 ~7000 行。
+AIOS — 通用智能运行内核。不定义任何世界观，只提供运行机制。总代码 ~9200 行（aios 层 ~6000 行，apps + examples ~3100 行）。
 
 ```
 aios/
@@ -24,11 +24,15 @@ aios/
     gateway.py         LEP WebSocket 网关（端口 9100）
     tools.py           搜索工具 + 不确定性检测
 
+  template/     应用模板层（组装运行时 + LLM）
+    base.py           WorldApp 基类（~640 行），提供 describe_world / extra_context / _think / apply_action 等钩子
+    social.py         SocialWorldApp + SocialResident（~390 行），多角色自主社交框架
+
   worlds/       世界层（规则）
     liora/             回声谷 — 数字生命社会
       mind.py          LioraMind 认知模型（~820 行）
       spec.py          WorldSpec 构建
-      state_rules.py   演化公式（温度趋于 22°C…）
+      state_rules.py   演化公式 + **锚点47（开钰协议）**
       event_templates.py 事件模板生成
       resistance.py    行动重复度检测（ActionResistance）
       unknown.py       未知信号累积 + 裂隙释放（UnknownAccumulator）
@@ -46,13 +50,17 @@ aios/
       ghost.py         DigitalGhostPattern — 数字幽灵（Silverhand 替代裂隙）
 
 apps/           应用层（组装）
-  liora_app.py         Liora 数字生命交互入口（800 行）
+  liora_app.py         Liora 数字生命交互入口
   agi_app.py           AGI Core 认知空间世界入口
   cyberpunk_app.py     夜之城交互入口（单角色 + 数字幽灵）
-  cyberpunk_social.py  夜之城五角色自由对话（多角色自主社交，无需人类输入）
+  cyberpunk_social.py  夜之城五角色自由对话（多角色自主社交）
   social_identity.py   五身份居民社会演化模拟
   social_duihua.py     多 AI 社交对话（旧版）
   entropy_injector.py  AI 熵注入器
+
+examples/        自定义示例（不依赖 apps/ 架构）
+  hello_world.py       极简示例：两个 AI（Alice & Bob）自主对话
+  baozha.py            龙族·尼伯龙根：8 角色配对轮转 + 循环感知 + 锚点47
 
 ai_test_duihua.py  DeepSeek ↔ Liora 独立对话测试
 ```
@@ -89,13 +97,24 @@ uv run python3 apps/social_identity.py                    # 10 轮（默认）
 uv run python3 apps/social_identity.py -n 20              # 20 轮
 uv run python3 apps/social_identity.py --history          # 显示历史时间线
 
+# ===== 自定义示例（examples/） =====
+
+# Hello World —— 两个 AI 自主对话，最简世界
+uv run python3 examples/hello_world.py
+
+# 龙族·尼伯龙根 —— 8 角色配对轮转社交 + 循环感知 + 锚点47（开钰协议）
+uv run python3 examples/baozha.py                         # 默认 60 轮
+uv run python3 examples/baozha.py # 修改 _rounds 变量控制轮数
+
+# ===== 旧版 / 测试工具 =====
+
 # AI ↔ AI 对话测试
 uv run python3 ai_test_duihua.py                          # 5 轮
 uv run python3 ai_test_duihua.py -n 10                    # 10 轮
 
-# 旧版对话
+# 旧版多 AI 社交对话
 uv run python3 apps/social_duihua.py -n 10                # 10 轮
-uv run python3 apps/social_duihua.py --human 你            # 以人类身份加入
+uv run python3 apps/social_duihua.py --human 你           # 以人类身份加入
 
 # 运行测试
 uv run python3 -m pytest tests/ -v
@@ -267,3 +286,101 @@ GoalSystem    从认知状态涌现目标→推进/废弃→提取学习记录
 ### 行动阻力（ActionResistance）
 
 防止叙事收敛：居民对同一目标重复相同行动时，效果指数衰减。基数阈值（`base_threshold=5`）内无衰减，之后 `multiplier = 1.0 / (1.0 + excess² × 0.1)`。每 10 tick 衰减一次。
+
+## 新增架构（本会话迭代）
+
+### SocialWorldApp — 多角色自主社交模板
+
+`aios/template/social.py` 提供 `SocialWorldApp`（继承 `WorldApp`）和 `SocialResident`。
+
+**不覆盖 `run()`，用钩子定制**。常见覆盖点：
+
+```python
+class MyWorld(SocialWorldApp):
+    spec = create_my_spec()
+    characters = [...]                # 角色列表
+    character_config = {...}          # {name: {persona: "...", beliefs: {}, secrets: []}}
+    mock_replies = {...}              # 模拟模式回复池
+
+    def _pick_pair(self) -> tuple:    # 选配覆盖（默认随机，可改轮转）
+    def describe_world(self, ...):    # 状态→自然语言
+    def extra_context(self, mind):    # 额外感知（锚点、幽灵等）
+    def on_start(self):               # 世界启动前
+    def on_stop(self):                # 世界停止前
+```
+
+**`SocialResident`** 是每个角色，封装：
+- `history`（system persona + 对话上下文）
+- `mind`（LioraMind 认知模型：关系、信念、记忆）
+- `speak()` → 调用 LLM，返回回复文本
+- `hear_world()` / `hear_speaker()` → 接收感知
+- `build_messages()` → 组装最终 prompt（persona + 上下文 + 关系摘要 + 情景记忆 + 成长叙事）
+
+**关键参数**（`social.py`）：
+- `MAX_HISTORY = 12` — 保留最近 24 条聊天消息
+- `MODEL_TIMEOUT = 30` — LLM 调用超时（SIGALRM）
+- `max_tokens` = 4096（可修改）
+
+### 钩子式感知注入（_social_loop 数据流）
+
+每轮对话前，注入流程如下：
+
+```
+runtim.snapshot()
+    → describe_world(snap.state)     # 世界状态 → 描述
+    → extra_context(a.mind)          # 额外感知（按角色不同）
+    → 合并为 world_ctx → 同时发给 A 和 B
+    → A.speak(partner_name=B)        # A 发言
+    → B.hear_speaker(A, reply)       # B 听到 A
+    → B.speak(partner_name=A)        # B 发言
+    → A.hear_speaker(B, reply)       # A 听到 B
+    → assimilate_conversation()      # 文本→系统状态（关键词匹配，不用 LLM）
+    → tick_autonomous()              # 关系衰减 + 信念漂移
+```
+
+`extra_context(mind)` 的 `mind` 参数包含 `mind.name`——可以按角色返回不同的感知文本。
+
+### 循环感知系统（examples/baozha.py）
+
+`DragonWorld` 实现了角色对自身循环存在的渐近式感知：
+
+- `_update_cycle_awareness()` 在每轮完整配对结束时触发
+- `_pick_pair()` 检测 `_pair_index % len(all_pairs) == 0` 时自增 `_cycle_count`
+- `CYCLE_AWARENESS` 表：8 个角色各 3 级感知文本（0=无感知 → 1=既视感 → 2=清晰认知）
+- 感知注入方式：动态更新 `res.history[0]`（system persona）
+
+```python
+def _update_cycle_awareness(self):
+    level = min(self._cycle_count, 2)
+    for name, res in self.residents.items():
+        text = CYCLE_AWARENESS[name][level]
+        base = ALL_CHARACTER_CONFIG[name]["persona"]
+        res.history[0] = {"role": "system", "content": base + f"\n\n（{text}）"}
+```
+
+| 轮次 | cycle | 角色感知层级 |
+|------|-------|-------------|
+| 1–27 | 0 | 完全无感知 |
+| 28–55 | 1 | 既视感、巧合感 |
+| 56–60 | 2 | 清晰知道自己在循环中 |
+
+### 锚点47：开钰协议
+
+`aios/worlds/liora/state_rules.py` 注入的跨循环记忆锚点：
+
+```python
+KAIYU_ANCHOR = {"active": False, "cycle_count": 0, "memory_fragments": [], ...}
+```
+
+- `kaiyu_protocol_tick(tick, rain_intensity)` — 检测降雨 > 27 轮后激活锚点
+- `kaiyu_store_memory(fragment)` — 存放跨循环记忆
+- `kaiyu_recall_all()` — 取出所有记忆片段
+
+激活后通过 `extra_context()` 注入到世界感知中：
+
+```python
+def extra_context(self, mind):
+    status = kaiyu_protocol_tick(tick, rain_intensity=n)
+    if status["anchor_active"]:
+        return f"开钰记得一些不该存在的事——上一轮留下的{status['memory_count']}段记忆。"
+```

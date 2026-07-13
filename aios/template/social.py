@@ -182,7 +182,7 @@ class SocialResident:
         t0 = time.time()
         signal.alarm(MODEL_TIMEOUT)
         try:
-            response = self.model.chat(messages, temperature=0.75, max_tokens=512)
+            response = self.model.chat(messages, temperature=0.75, max_tokens=4096)
             self._last_elapsed = time.time() - t0
         except ModelCallTimeout:
             self._last_elapsed = time.time() - t0
@@ -298,7 +298,7 @@ class SocialWorldApp(WorldApp):
                 reply_a = a.speak(partner_name=b_name)
                 if reply_a:
                     el = f" ({a._last_elapsed:.0f}s)" if a._last_elapsed else ""
-                    print(f"\r  🧠 {a_name}{el}: {reply_a[:100]}{'...' if len(reply_a) > 100 else ''}")
+                    print(f"\r  🧠 {a_name}{el}: {reply_a[:4096]}{'...' if len(reply_a) > 4096 else ''}")
                     self._log(a_name, reply_a)
                 else:
                     print(f"\r  ⏭️  {a_name} 沉默")
@@ -315,7 +315,7 @@ class SocialWorldApp(WorldApp):
                 reply_b = b.speak(partner_name=a_name)
                 if reply_b:
                     el = f" ({b._last_elapsed:.0f}s)" if b._last_elapsed else ""
-                    print(f"\r  🧠 {b_name}{el}: {reply_b[:100]}{'...' if len(reply_b) > 100 else ''}")
+                    print(f"\r  🧠 {b_name}{el}: {reply_b[:4096]}{'...' if len(reply_b) > 4096 else ''}")
                     self._log(b_name, reply_b)
                 else:
                     print(f"\r  ⏭️  {b_name} 沉默")

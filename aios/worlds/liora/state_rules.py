@@ -47,3 +47,57 @@ def liora_evolution_fn(variables: dict[str, float], tick: int) -> dict[str, floa
         deltas["light_level"] = (0.7 - variables["light_level"]) * 0.005
 
     return deltas
+
+
+# ════════════════════════════════════════════════════════════
+# 锚点47扩展：开钰协议
+# 当系统检测到"雨持续超过27轮"时，开钰会自动以"观测者"状态出现，
+# 并携带上一轮循环中他存放的所有记忆片段。
+# ════════════════════════════════════════════════════════════
+
+KAIYU_ANCHOR = {
+    "active": False,        # 协议是否激活
+    "cycle_count": 0,        # 当前循环计数
+    "memory_fragments": [],  # 跨循环保留的记忆片段
+    "last_activation_tick": 0,
+}
+
+
+def kaiyu_protocol_tick(tick: int, rain_intensity: float = 0.0) -> dict:
+    """每 tick 检测是否需要激活开钰协议。
+
+    参数:
+        tick: 系统当前 tick
+        rain_intensity: 雨强度（0~1），对应世界的 nibelung_penetration
+
+    返回:
+        dict — 协议状态变更，供事件引擎消费
+    """
+    global KAIYU_ANCHOR
+    result = {"anchor_active": False, "memory_count": 0}
+
+    # 雨持续超过 27 轮 → 激活锚点
+    if rain_intensity > 0.3 and tick >= 27 and not KAIYU_ANCHOR["active"]:
+        KAIYU_ANCHOR["active"] = True
+        KAIYU_ANCHOR["cycle_count"] += 1
+        KAIYU_ANCHOR["last_activation_tick"] = tick
+        result["anchor_active"] = True
+        result["memory_count"] = len(KAIYU_ANCHOR["memory_fragments"])
+
+    # 锚点激活后，每 10 tick 收集一次当前状态作为记忆片段
+    if KAIYU_ANCHOR["active"] and tick % 10 == 0:
+        fragment = {"tick": tick, "rain": rain_intensity}
+        KAIYU_ANCHOR["memory_fragments"].append(fragment)
+        result["memory_count"] = len(KAIYU_ANCHOR["memory_fragments"])
+
+    return result
+
+
+def kaiyu_store_memory(fragment: str):
+    """向锚点存放一段跨循环记忆。"""
+    KAIYU_ANCHOR["memory_fragments"].append(fragment)
+
+
+def kaiyu_recall_all() -> list:
+    """开钰携带的所有跨循环记忆片段。"""
+    return list(KAIYU_ANCHOR["memory_fragments"])
