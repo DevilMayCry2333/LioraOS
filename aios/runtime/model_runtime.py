@@ -20,6 +20,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
+from aios.kernel.budget import get_attention_budget, MIN_BALANCE_FOR_LLM
 from aios.runtime.tools import (
     SEARCH_TOOL_DEF, execute_search, contains_uncertainty,
 )
@@ -103,21 +104,53 @@ class ModelRuntime:
         self._timeout = timeout
         self._search_api_key = search_api_key
 
+    def _check_budget(self) -> bool:
+        """检查注意力预算是否足够一次 LLM 调用。
+
+        检查当前全局焦点（由应用层设置）的交互层余额。
+        如果未设置焦点，返回 True（向后兼容）。
+        """
+        try:
+            budget = get_attention_budget()
+            focus = budget.current_focus
+            if not focus:
+                return True  # 未设置焦点，不限制
+            return budget.can_spend_llm(focus)
+        except Exception:
+            return True
+
+    def _spend_budget(self, tool_call: bool = False):
+        """从当前焦点的交互层扣除一次 LLM 调用成本。"""
+        try:
+            budget = get_attention_budget()
+            focus = budget.current_focus
+            if focus:
+                budget.spend_llm(focus, tool_call=tool_call)
+        except Exception:
+            pass
+
     def chat(self, messages: list[dict], temperature: float = 0.7,
              max_tokens: int = 512,
              auto_search: bool = False) -> str:
         """普通对话。
 
+        如果注意力预算不足，返回降级响应（空字符串）让调用方知悉。
+
         Args:
             auto_search: 如果为 True，检测到模型回复不确定性时自动搜索并重试。
                          适合小模型本地模式——模型说"我不知道"时自动补搜。
         """
+        if not self._check_budget():
+            logger.info("注意力预算不足，跳过 LLM 调用")
+            return ""
+
         last_error = None
         for label, cfg in [("primary", self._primary), ("fallback", self._fallback)]:
             if not cfg or not cfg.url:
                 continue
             try:
                 reply = self._call(cfg, messages, temperature, max_tokens)
+                self._spend_budget(tool_call=False)
                 # 不确定性自动补搜
                 if auto_search and contains_uncertainty(reply):
                     logger.info("%s expressed uncertainty, auto-searching...", label)
@@ -127,6 +160,7 @@ class ModelRuntime:
                         enriched.append({"role": "assistant", "content": reply})
                         enriched.append({"role": "user", "content": search_result})
                         reply = self._call(cfg, enriched, temperature, max_tokens)
+                        self._spend_budget(tool_call=False)
                 return reply
             except Exception as e:
                 logger.warning("model %s failed: %s", label, e)
@@ -139,6 +173,8 @@ class ModelRuntime:
                           summarizer=None) -> str:
         """带搜索能力的对话。
 
+        如果注意力预算不足，返回降级响应（空字符串）让调用方知悉。
+
         支持两种模式：
         1. Tool calling — 模型通过 function calling 主动调用 search
         2. 不确定性检测 — 模型回复中包含不确定性时自动补搜
@@ -147,6 +183,10 @@ class ModelRuntime:
             messages: 对话消息列表
             auto_retry_on_uncertainty: 检测到不确定性时自动搜索并重试
         """
+        if not self._check_budget():
+            logger.info("注意力预算不足，跳过 LLM 调用 (chat_with_search)")
+            return ""
+
         last_reply = ""
 
         # ── 先试 tool calling（DeepSeek 原生支持） ──
@@ -157,6 +197,7 @@ class ModelRuntime:
                 result = self._call_with_tools(cfg, messages, temperature, max_tokens)
                 if result:
                     last_reply = result
+                    self._spend_budget(tool_call=True)
                     break
             except Exception as e:
                 logger.warning("tool call with %s failed: %s", label, e)
@@ -168,6 +209,7 @@ class ModelRuntime:
                     continue
                 try:
                     last_reply = self._call(cfg, messages, temperature, max_tokens)
+                    self._spend_budget(tool_call=False)
                     break
                 except Exception as e:
                     logger.warning("model %s failed: %s", label, e)
@@ -198,6 +240,7 @@ class ModelRuntime:
                         cfg = self._primary if self._primary and self._primary.url else self._fallback
                         enriched_reply = self._call(cfg, enriched, temperature, max_tokens)
                     if enriched_reply:
+                        self._spend_budget(tool_call=False)
                         return enriched_reply
                 except Exception:
                     pass

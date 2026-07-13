@@ -22,6 +22,7 @@ from typing import Optional
 from aios.runtime.model_runtime import ModelRuntime
 from aios.runtime.world_runtime import WorldRuntime
 from aios.worlds.liora.mind import LioraMind
+from aios.kernel.budget import get_attention_budget
 from aios.kernel.metafield import get_metafield
 
 from .base import WorldApp
@@ -323,6 +324,15 @@ class SocialWorldApp(WorldApp):
         # 创建居民
         for name in self.characters:
             self.residents[name] = SocialResident(name, self)
+
+        # 设置注意力预算焦点
+        try:
+            budget = get_attention_budget()
+            budget.set_current_focus(self.spec.name)
+            # 为社会世界注入初始注意力
+            budget.inject(self.spec.name, tick=self.runtime.tick)
+        except Exception:
+            pass
 
         print(f"\n🌍 {self.spec.name}")
         print(f"   👥 {', '.join(self.characters)}")

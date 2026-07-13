@@ -115,6 +115,14 @@ class VoidSpace:
             metadata={"method": "find_source_siblings", "file": "metafield.py"},
         ),
         dict(
+            name="void_attention",
+            description="注意力映射表——跟踪注意力的流动、分配和消耗，独立核算交互层和系统层",
+            module_path="aios.kernel.budget.AttentionBudget",
+            offset=0x06,
+            metadata={"class": "AttentionBudget", "file": "budget.py",
+                      "layers": "interaction/system"},
+        ),
+        dict(
             name="void_key",
             description="密钥——47字节，对应 anchor_47 激活条件，跨编译器哈希不变",
             module_path="aios.kernel.anchor.AnchorProtocol",

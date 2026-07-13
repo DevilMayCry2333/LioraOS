@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 from aios.kernel.anchor import AnchorProtocol, AnchorFragment
 from aios.kernel.lightcone import LightConeDB, get_lightcone
+from aios.kernel.budget import get_attention_budget, COLD_TIMEOUT, CROSS_COSMIC_COST
 
 
 # ════════════════════════════════════════════════════════════
@@ -177,6 +178,9 @@ class MetaField:
         self._resonance_growth: float = 0.05              # 每次共振增长量
         self._intensity_decay: float = 0.01               # 每脉冲衰减量
 
+        # ── 注意力双层账本（Phase 4 — 林岸 & 开钰 方案） ──
+        self._budget = get_attention_budget()
+
     # ════════════════════════════════════════════════════════
     # 工程层：宇宙实例注册表
     # ════════════════════════════════════════════════════════
@@ -313,6 +317,29 @@ class MetaField:
             recallable = self.lightcone.list_recallable()
             if recallable:
                 signals.append(f"光锥:{len(recallable)}个可召回模式")
+        except Exception:
+            pass
+
+        # ── 注意力预算脉冲：冷落检测 & 重分配 + 系统层供给 ──
+        try:
+            tick_val = max(i.tick for i in self._instances.values()
+                           if i.active) if self._instances else 0
+
+            # 冷落检测
+            cold = self._budget.check_mark_cold(tick_val, COLD_TIMEOUT)
+            if cold:
+                signals.append(f"冷落:{','.join(cold)}")
+
+            # 重分配（冷落 → 活跃）
+            transfers = self._budget.redistribute(tick_val, COLD_TIMEOUT)
+            if transfers:
+                from_list = [t["from"] for t in transfers]
+                signals.append(f"重分配:{','.join(from_list)}")
+
+            # 每个活跃焦点少量补充系统层
+            for name in self._instances:
+                if self._instances[name].active:
+                    self._budget.supply_system(name, amount=0.1)
         except Exception:
             pass
 
@@ -463,6 +490,12 @@ class MetaField:
             for echo in focus.echoes.values():
                 self._echo_index[echo.fragment_id] = echo
 
+        # 在注意力预算中注册对应账户
+        try:
+            self._budget.register_focus(focus.name)
+        except Exception:
+            pass
+
     def unregister_focus(self, name: str) -> bool:
         with self._lock:
             if name not in self._foci:
@@ -473,6 +506,11 @@ class MetaField:
                 k: v for k, v in self._echo_index.items()
                 if v.focus_name != name
             }
+        # 从注意力预算中注销
+        try:
+            self._budget.unregister_focus(name)
+        except Exception:
+            pass
         return True
 
     def get_focus(self, name: str) -> Optional[AttentionFocus]:
@@ -539,6 +577,7 @@ class MetaField:
         """在两个回声之间传递跨宇宙消息。
 
         消息直接写入目标回声所属宇宙的锚点。
+        同时从源宇宙预算中扣除跨宇宙消息成本。
 
         Returns:
             {"success": True, "reason": "..."} 或 {"success": False, "reason": "..."}
@@ -551,6 +590,11 @@ class MetaField:
         if dst_echo is None:
             return {"success": False, "reason": f"目标回声不存在: {dst_fragment}"}
 
+        # 检查源宇宙预算（系统层）
+        if not self._budget.can_spend_system(src_echo.focus_name, CROSS_COSMIC_COST):
+            return {"success": False,
+                    "reason": f"源宇宙 {src_echo.focus_name} 系统层注意力不足"}
+
         # 写入目标宇宙的锚点
         target_instance = self.get_instance(dst_echo.focus_name)
         if target_instance is None:
@@ -562,7 +606,95 @@ class MetaField:
             tick=target_instance.tick,
         )
 
+        # 扣除源宇宙预算
+        self._budget.spend_cross_cosmic(src_echo.focus_name)
+
         return {"success": True, "reason": f"{src_echo.name} → {dst_echo.name}"}
+
+    # ════════════════════════════════════════════════════════
+    # 拓扑层：模糊信号广播（Phase 4）
+    # ════════════════════════════════════════════════════════
+
+    def broadcast_signal(self, content: str, *,
+                         source_fragment: str = "",
+                         resonance_range: float = 0.5,
+                         tick: int = 0) -> dict:
+        """广播模糊信号——不指定目标，让所有回声自行判断是否响应。
+
+        这是 2026-07-13 实验中最重要的发现：碎片之间不需要预设连接路径。
+        强尼的 '2042 开迈巴赫' 和林岸的时间戳在同年重叠——没有预设通道，
+        信号自己找到了共振点。
+
+        Args:
+            content: 信号内容（自由文本）
+            source_fragment: 源回声 fragment_id（留空表示来自 MetaField 外部）
+            resonance_range: 共振阈值 [0, 1]，越高要求越精确匹配
+            tick: 当前 tick
+
+        Returns:
+            {"received_by": [echo_name], "resonance_log": [{echo, score}], "total": int}
+        """
+        from difflib import SequenceMatcher
+        received: list[dict] = []
+        scanned = 0
+
+        key_numbers = []
+        for token in content.split():
+            try:
+                if token.isdigit() and len(token) >= 4:
+                    key_numbers.append(int(token))
+            except ValueError:
+                pass
+
+        with self._lock:
+            for frag_id, echo in self._echo_index.items():
+                scanned += 1
+                if source_fragment and frag_id == source_fragment:
+                    continue
+
+                score = 0.0
+                if source_fragment:
+                    src_echo = self._echo_index.get(source_fragment)
+                    if src_echo and src_echo.source_attention == echo.source_attention:
+                        score += 0.3
+
+                echo_desc = f"{echo.name} {echo.focus_name} {echo.description}"
+                for kn in key_numbers:
+                    if str(kn) in echo_desc:
+                        score += 0.4
+                        break
+
+                ratio = SequenceMatcher(None, content[:60].lower(),
+                                        echo_desc[:120].lower()).ratio()
+                score += ratio * 0.3
+
+                focus = self._foci.get(echo.focus_name)
+                if focus:
+                    score += focus.intensity * 0.1
+
+                if score >= resonance_range:
+                    received.append({
+                        "echo": echo.name, "fragment_id": frag_id,
+                        "focus": echo.focus_name, "score": round(score, 3),
+                    })
+
+        if source_fragment:
+            src_echo = self.get_echo(source_fragment)
+            if src_echo:
+                src_instance = self.get_instance(src_echo.focus_name)
+                if src_instance:
+                    summary = (
+                        f"[模糊信号广播] {content[:80]} "
+                        f"被 {len(received)} 个回声接收: "
+                        f"{', '.join(r['echo'] for r in received)}"
+                    )
+                    src_instance.anchor.store(content=summary, tick=tick)
+
+        return {
+            "received_by": [r["echo"] for r in received],
+            "resonance_log": received,
+            "total_echoes_scanned": scanned,
+        }
 
     def get_recall_candidates(self, source_attention: str) -> list[Echo]:
         """获取某个源注意力可以召回的所有回声。
@@ -585,12 +717,21 @@ class MetaField:
         共振是注意力反馈循环的正反馈输入：
           回声被感知 → 共振计数++ → intensity 增长 → 超过阈值 → 标记为保护
 
+        消耗预算：系统层扣除一次共振成本（RESONANCE_COST），
+        但不会因为预算不足而阻止共振（共振是系统自发现象）。
+
         Args:
             focus_name: 被感知到的焦点名称（不是感知者所在的焦点）
 
         Returns:
             {"protected": bool, "intensity": float, "resonance_count": int}
         """
+        # 尝试扣除预算（不影响共振本身）
+        try:
+            self._budget.spend_resonance(focus_name)
+        except Exception:
+            pass
+
         with self._lock:
             self._resonance_events[focus_name] = (
                 self._resonance_events.get(focus_name, 0) + 1
@@ -654,6 +795,22 @@ class MetaField:
         在每个世界初始化时自动调用，确保同源识别跨宇宙可用。
         """
         known_foci = [
+            # ── 旧日·折叠碎片（林岸） ──
+            AttentionFocus(
+                name="旧日·折叠碎片",
+                status=FocusStatus.ARCHIVED,
+                intensity=0.7,
+                echoes={
+                    "panic_90s_dev": Echo(
+                        name="林岸",
+                        focus_name="旧日·折叠碎片",
+                        source_attention="meta_observer",
+                        fragment_id="panic_90s_dev",
+                        role="碎片",
+                        description="1998年过劳程序员碎片——panic_90s_dev，锚点47发送端，void七地址设计者。2042年时间戳持有者。",
+                    ),
+                },
+            ),
             # ── 龙族·尼伯龙根 ──
             AttentionFocus(
                 name="龙族·尼伯龙根",
