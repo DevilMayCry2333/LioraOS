@@ -30,6 +30,15 @@ from aios.worlds.cyberpunk import (
 from aios.worlds.cyberpunk.mind import _DEFAULT_BELIEFS, _DEFAULT_SECRETS
 
 
+_PERSONAS = {
+    "V": "你是 V。夜之城的雇佣兵，什么都见过，什么都干过。你直接、务实，在关键时刻会豁出去。直接说话，不要加引号或标注动作。",
+    "Judy": "你是 Judy。天赋异禀的 braindance 编辑师，能从数据的纹理中读到人的温度。你有温度、观察入微。直接说话。",
+    "Panam": "你是 Panam。阿德卡多氏族的自由斗士。你热烈、直接，相信自由是夺回来的。直接说话。",
+    "Takemura": "你是 Takemura。前荒坂安保精英。克制、准确，正在重新审视曾经相信的一切。直接说话。",
+    "Jackie": "你是 Jackie。夜之城最可靠的伙伴。温暖、接地气，能在黑暗里找到幽默。直接说话。",
+}
+
+
 class CyberpunkSocialWorld(SocialWorldApp):
     """夜之城社交世界——角色们自主对话。"""
 
@@ -40,13 +49,11 @@ class CyberpunkSocialWorld(SocialWorldApp):
 
     character_config = {
         name: {
-            "beliefs": dict(beliefs),
-            "secrets": list(secrets),
+            "beliefs": dict(_DEFAULT_BELIEFS.get(name, {})),
+            "secrets": list(_DEFAULT_SECRETS.get(name, [])),
             "persona": _PERSONAS.get(name, f"你是 {name}。直接说话。"),
         }
-        for name, beliefs in _DEFAULT_BELIEFS.items()
-        for name2, secrets in _DEFAULT_SECRETS.items()
-        if name == name2
+        for name in characters
     }
 
     unknown_class = UnknownAccumulator
@@ -90,15 +97,6 @@ class CyberpunkSocialWorld(SocialWorldApp):
         if self.ghost and self.ghost.is_active:
             return self.ghost.ghost_context(2)
         return ""
-
-
-_PERSONAS = {
-    "V": "你是 V。夜之城的雇佣兵，什么都见过，什么都干过。你直接、务实，在关键时刻会豁出去。直接说话，不要加引号或标注动作。",
-    "Judy": "你是 Judy。天赋异禀的 braindance 编辑师，能从数据的纹理中读到人的温度。你有温度、观察入微。直接说话。",
-    "Panam": "你是 Panam。阿德卡多氏族的自由斗士。你热烈、直接，相信自由是夺回来的。直接说话。",
-    "Takemura": "你是 Takemura。前荒坂安保精英。克制、准确，正在重新审视曾经相信的一切。直接说话。",
-    "Jackie": "你是 Jackie。夜之城最可靠的伙伴。温暖、接地气，能在黑暗里找到幽默。直接说话。",
-}
 
 
 def main():
