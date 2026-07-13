@@ -18,6 +18,7 @@ from aios.kernel.event import WorldEventEngine, WorldEvent
 from aios.kernel.bus import MessageBus, Message, MessageType
 from aios.kernel.spec import WorldSpec
 from aios.kernel.history import WorldHistory
+from aios.kernel.metafield import MetaField, get_metafield
 
 
 @dataclass
@@ -44,7 +45,8 @@ class WorldRuntime:
     """
 
     def __init__(self, spec: WorldSpec, data_dir: str = "data",
-                 interval: float = 15.0):
+                 interval: float = 15.0,
+                 metafield: Optional[MetaField] = None):
         self.spec = spec
         world_dir = Path(data_dir) / spec.name
         world_dir.mkdir(parents=True, exist_ok=True)
@@ -63,6 +65,9 @@ class WorldRuntime:
         self._active = False
         self._thread: Optional[threading.Thread] = None
         self._tick_count = 0
+
+        # MetaField 心跳
+        self._metafield: Optional[MetaField] = metafield
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -123,6 +128,13 @@ class WorldRuntime:
                 sender="world",
                 payload={"tick": self._tick_count, "event": evt.to_dict()},
             ))
+
+        # 4. MetaField 心跳（跨宇宙脉冲）
+        if self._metafield is not None:
+            try:
+                self._metafield.pulse()
+            except Exception:
+                pass
 
     # ── 世界物体 ──────────────────────────────────
 

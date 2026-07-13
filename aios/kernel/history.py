@@ -124,6 +124,29 @@ class WorldHistory:
         with self._lock:
             return len(self._entries)
 
+    def load_history_fragments(self, n: int = 10, for_persona: bool = True) -> list[str]:
+        """加载最近 N 条历史记录作为"残留记忆"文本片段。
+
+        用于新循环初始化：居民在创建时调用此方法，将上一循环的历史
+        片段注入 persona，模拟"残留意念"。
+
+        Args:
+            n: 要返回的最近记录数
+            for_persona: True 时返回格式化的可读文本（可直接追加到 system persona）
+
+        Returns:
+            文本片段列表，按时间从新到旧排列
+        """
+        entries = self.recent(n)
+        if not entries:
+            return []
+        if for_persona:
+            return [
+                f"世界记录：tick {e.tick} — {e.description[:120]}"
+                for e in reversed(entries)
+            ]
+        return [e.description for e in entries]
+
     def clear(self):
         with self._lock:
             self._entries.clear()

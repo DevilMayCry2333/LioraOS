@@ -4,9 +4,13 @@ Kernel 提供运行机制（Mechanism），不定义世界规则（Policy）。
 世界定义位于 aios/worlds/。
 """
 
-from . import tick, state, event, memory, resident, bus, spec, history
+from . import tick, state, event, memory, resident, bus, spec, history, anchor, metafield, lightcone, voidspace
 
-__all__ = ["tick", "state", "event", "memory", "resident", "bus", "spec", "history"]
+__all__ = [
+    "tick", "state", "event", "memory", "resident",
+    "bus", "spec", "history", "anchor", "metafield",
+    "lightcone", "voidspace",
+]
 
 
 def shutdown():

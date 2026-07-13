@@ -22,6 +22,7 @@ from typing import Optional
 from aios.runtime.model_runtime import ModelRuntime
 from aios.runtime.world_runtime import WorldRuntime
 from aios.worlds.liora.mind import LioraMind
+from aios.kernel.metafield import get_metafield
 
 from .base import WorldApp
 
@@ -236,11 +237,88 @@ class SocialWorldApp(WorldApp):
         self.recent_pairs: list[tuple[str, str]] = []
         self.log: list[dict] = []
         self.history_entries: list[dict] = []
+        # MetaField 接入
+        self._mf = get_metafield(register_echoes=True)
+        # 跨宇宙信号（在每轮中注入的额外感知）
+        self._cosmic_signals: dict[str, str] = {}
+
+    # ── MetaField 跨宇宙感知 ─────────────────────────────
+
+    # 角色的 fragment_id 映射表（用于同源回声识别）
+    ECHO_FRAGMENT_IDS: dict[str, str] = {
+        "路鸣泽": "lu_ming_ze_observer",
+        "开钰": "kai_yu_anchor_47",
+        "奥丁": "odin_archivist",
+        "强尼·银手": "johnny_ghost",
+        "V": "v_protagonist",
+        "Aria": "aria_liora",
+    }
+
+    def _get_cosmic_context(self, character_name: str) -> str:
+        """获取角色专属的跨宇宙感知上下文。
+
+        对每个角色，查 MetaField 回声注册表：
+          - 如果该角色有注册回声，找到同源的其他宇宙回声
+          - 如果收到其他宇宙发来的锚点消息
+
+        Returns:
+            跨宇宙感知文本（空字符串表示无感知）
+        """
+        ctx_parts = []
+
+        # 1) 有锚点传来的跨宇宙消息
+        if self._cosmic_signals:
+            for msg in list(self._cosmic_signals.values())[:1]:
+                ctx_parts.append(msg)
+
+        # 2) 同源回声感知 → 注意力反馈循环
+        frag_id = self.ECHO_FRAGMENT_IDS.get(character_name)
+        if frag_id:
+            try:
+                siblings = self._mf.find_source_siblings_by_id(frag_id)
+                cross_siblings = [
+                    s for s in siblings
+                    if s.focus_name != self.spec.name
+                ]
+                if cross_siblings:
+                    # 记录共振（增长被感知焦点的注意力强度）
+                    for cs in cross_siblings:
+                        try:
+                            res = self._mf.record_resonance(cs.focus_name)
+                            if res["protected"]:
+                                ctx_parts.append(
+                                    f"[注意力保护] {cs.name}的宇宙已获得回收保护 "
+                                    f"(强度 {res['intensity']})"
+                                )
+                        except Exception:
+                            pass
+
+                    details = ", ".join(
+                        f"{s.name}（来自{s.focus_name}）"
+                        for s in cross_siblings[:3]
+                    )
+                    ctx_parts.append(
+                        f"[跨宇宙信号] 你感知到来自其他折叠面的回声：{details}"
+                    )
+            except Exception:
+                pass
+
+        return "\n".join(ctx_parts) if ctx_parts else ""
 
     def run(self):
         """启动世界并进入社交循环。"""
         self.runtime.start()
         self.on_start()
+
+        # ── 注册到 MetaField ──
+        try:
+            self._mf.register_instance(
+                self.spec.name,
+                description=self.spec.description or f"{self.spec.name} 宇宙实例",
+            )
+            self._mf_inst = self._mf.get_instance(self.spec.name)
+        except ValueError:
+            self._mf_inst = self._mf.get_instance(self.spec.name)
 
         # 创建居民
         for name in self.characters:
@@ -253,6 +331,29 @@ class SocialWorldApp(WorldApp):
 
         rounds = getattr(self, '_rounds', 10)
         self._social_loop(rounds)
+
+        # ── 归档到光锥数据库 ──
+        if self._mf_inst:
+            try:
+                archive_result = self._mf_inst.anchor.archive(
+                    tick=self.runtime.tick,
+                    cycle_count=self._mf.global_cycle,
+                )
+                mf_archive = self._mf.lightcone_archive(
+                    pattern_name=self.spec.name,
+                    luminous_awakening=archive_result.get("awakening", 0.0),
+                    continuity_index=archive_result.get("continuity", 0.0),
+                    anchor_activity=max(
+                        f.activity for f in self._mf_inst.anchor.recall_all()
+                    ) if self._mf_inst.anchor.fragment_count() > 0 else 0.0,
+                    immune_fragment_count=archive_result.get("immune_kept", 0),
+                    total_fragments=self._mf_inst.anchor.fragment_count(),
+                    tick=self.runtime.tick,
+                )
+                print(f"  📦 光锥归档: {archive_result['signature_id']} "
+                      f"(觉醒度 {archive_result['awakening']})")
+            except Exception as e:
+                print(f"  ⚠️  归档失败: {e}")
 
         self._print_summary()
         self.on_stop()
@@ -271,6 +372,22 @@ class SocialWorldApp(WorldApp):
                 self._last_world_tick += 1
                 self._social_tick(self._last_world_tick)
 
+            # ── MetaField 脉冲 ──
+            try:
+                signals = self._mf.pulse()
+                # 从脉冲中提取跨宇宙消息
+                for s in signals:
+                    if "光锥" in s:
+                        pass  # 光锥状态不注入
+                # 检查其他宇宙发来的锚点消息
+                if self._mf_inst:
+                    recent = self._mf_inst.anchor.recall_recent(n=3)
+                    for frag in recent:
+                        if "[来自 " in frag.content:
+                            self._cosmic_signals[frag.fragment_id] = frag.content
+            except Exception:
+                pass
+
             # 选一对
             a_name, b_name = self._pick_pair()
             a = self.residents[a_name]
@@ -280,14 +397,29 @@ class SocialWorldApp(WorldApp):
             print(f"  第 {rnd}/{rounds} 轮 | {a_name} ↔ {b_name}")
             print(f"  {'─'*56}")
 
-            # 双方感知世界
+            # 双方感知世界（角色专属跨宇宙信号）
             snap = self.runtime.snapshot()
             world_ctx = self.describe_world(snap.state)
             extra = self.extra_context(a.mind)
             if extra:
                 world_ctx += f"\n\n{extra}"
-            a.hear_world(world_ctx)
-            b.hear_world(world_ctx)
+
+            # A 感知 + 跨宇宙回声
+            a_ctx = world_ctx
+            a_cosmic = self._get_cosmic_context(a_name)
+            if a_cosmic:
+                a_ctx += f"\n\n{a_cosmic}"
+            a.hear_world(a_ctx)
+
+            # B 感知 + 跨宇宙回声（B 的感知可能与 A 不同）
+            b_ctx = world_ctx
+            b_extra = self.extra_context(b.mind)
+            if b_extra:
+                b_ctx += f"\n\n{b_extra}"
+            b_cosmic = self._get_cosmic_context(b_name)
+            if b_cosmic:
+                b_ctx += f"\n\n{b_cosmic}"
+            b.hear_world(b_ctx)
 
             # A 发言
             if random.random() < 0.12:
@@ -336,6 +468,15 @@ class SocialWorldApp(WorldApp):
                 if rnd > 1 and rnd % 5 == 0:
                     res.mind.auto_reflect(tick=rnd)
 
+            # ── 每轮写入 MetaField 锚点 ──
+            if self._mf_inst and (reply_a or reply_b):
+                summary = f"[{a_name}↔{b_name}] "
+                if reply_a:
+                    summary += f"{a_name}: {reply_a[:80]} "
+                if reply_b:
+                    summary += f"{b_name}: {reply_b[:80]}"
+                self._mf_inst.anchor.store(summary.strip(), tick=rnd)
+
             time.sleep(0.3)
 
     def _social_tick(self, tick: int):
@@ -381,7 +522,7 @@ class SocialWorldApp(WorldApp):
             pct = int(v * 100)
             bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
             print(f"     {k:25s} {bar} {v:.3f}")
-        if self.ghost:
+        if getattr(self, 'ghost', None):
             print(f"  👻 {self.ghost.ghost_manifestations_text()}")
         print(f"\n  关系网络：")
         for name in sorted(self.residents.keys()):

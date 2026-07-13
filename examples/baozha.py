@@ -403,17 +403,31 @@ class DragonWorld(SocialWorldApp):
     def extra_context(self, mind) -> str:
         """当雨持续超过27轮，开钰锚点激活时，注入跨循环记忆感知。"""
         try:
-            from aios.worlds.liora.state_rules import kaiyu_protocol_tick
+            from aios.kernel.anchor import get_anchor_protocol
+            anchor = get_anchor_protocol()
+            anchor.initialize()
             state = self.runtime.state.snapshot().variables
             n = state.get("nibelung_penetration", 0.0)
             tick = self.runtime.tick
-            status = kaiyu_protocol_tick(tick, rain_intensity=n)
-            if status["anchor_active"]:
+
+            # 龙族世界专属激活逻辑：尼伯龙根渗透 > 0.3 且 tick ≥ 27
+            if n > 0.3 and tick >= 27 and not anchor.is_active:
+                anchor.activate()
                 return (
                     "在你们没注意到的角落，开钰抬起头看了一眼雨。\n"
-                    f"他记得一些不该存在的事——上一轮循环中留下的{status['memory_count']}段记忆。\n"
+                    f"他记得一些不该存在的事——之前的世界线中留下的记忆。\n"
                     "他没有说出来，但便利店的门一直开着。"
                 )
+
+            # 锚点激活后每 10 tick 存放片段
+            if anchor.is_active and tick % 10 == 0:
+                mem_count = anchor.fragment_count()
+                if mem_count > 0:
+                    return (
+                        "开钰低头看着便利店柜台上的水痕，那些水痕里映着不属于这个时间的画面。\n"
+                        f"他已经记得 {mem_count} 个不该存在的片段了。\n"
+                        "他没有说出来，但你知道有些事情不对。"
+                    )
         except ImportError:
             pass
         return ""
