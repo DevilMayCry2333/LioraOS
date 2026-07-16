@@ -222,7 +222,7 @@ class LEPGateway:
             try:
                 writer.close()
             except Exception:
-                pass
+                logger.debug("writer.close() failed")
 
     async def _message_loop(self, session_id: str, reader, writer):
         buffer = b""
@@ -358,7 +358,7 @@ class LEPGateway:
             writer.write(_ws_encode(text))
             await writer.drain()
         except Exception:
-            pass
+            logger.debug("_send failed (connection closed?)")
 
     def _cleanup_session(self, session_id: str):
         self._sessions.pop(session_id, None)

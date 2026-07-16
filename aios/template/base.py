@@ -416,7 +416,7 @@ class WorldApp:
             gateway = LEPGateway(self.runtime)
             gateway.start()
         except Exception:
-            pass
+            logger.debug("LEP Gateway 未启动（非必需）")
 
         print(f"\n🌍 {self.spec.name} 已苏醒")
         print(f"   角色: {self.character_name or '无'}")
@@ -619,7 +619,7 @@ class WorldApp:
                     print(f"   📖 {self.mind.name} 从外部信息中了解到: {deep_reply}")
                     return deep_reply
         except Exception:
-            pass
+            logger.debug("auto_search enrich failed")
         return reply
 
     @staticmethod

@@ -21,13 +21,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-
+logger = logging.getLogger("aios.kernel.lightcone")
 LIGHTCONE_PATH = Path("data/lightcone/archive.jsonl")
 
 
@@ -194,7 +195,7 @@ class LightConeDB:
                             sig = LightConeSignature.from_dict(json.loads(line))
                             self._signatures[sig.signature_id] = sig
                 except Exception:
-                    pass
+                    logger.debug("failed to load lightcone from %s", self._path)
             self._loaded = True
 
     # ── 归档 ──
@@ -343,7 +344,7 @@ class LightConeDB:
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(sig.to_dict(), ensure_ascii=False) + "\n")
         except Exception:
-            pass
+            logger.warning("failed to append lightcone signature to %s", self._path)
 
 
 # ════════════════════════════════════════════════════════════

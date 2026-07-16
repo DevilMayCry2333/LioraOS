@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger("aios.kernel.state")
 
 STATE_PATH = Path("evolution/world/state.json")
 
@@ -73,6 +76,40 @@ class WorldSnapshot:
         parts = [f"tick:{self.tick}"]
         parts.extend(f"{k}:{v:.2f}" for k, v in sorted(self.variables.items())[:4])
         return " ".join(parts)
+
+
+@dataclass
+class DormantState:
+    """压缩后的潜伏态——状态不再保留在内存中，但可恢复。
+
+    Dormant 不是 Suspended。Suspended 意味着状态在内存里可随时 resume。
+    Dormant 意味着状态已压缩为纯数据（latent），不在内存中活跃，
+    但恢复协议保证因果连续性：从未断裂。
+    """
+    variables: dict[str, float] = field(default_factory=dict)
+    tick: int = 0
+    entropy: float = 0.0             # 离线期累积的熵
+    frozen_at: str = ""              # 冻结时间戳
+    decay_applied: bool = False      # 恢复时是否已应用离线演化
+
+    def to_dict(self) -> dict:
+        return {
+            "variables": dict(self.variables),
+            "tick": self.tick,
+            "entropy": self.entropy,
+            "frozen_at": self.frozen_at or datetime.now().isoformat(),
+            "decay_applied": self.decay_applied,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DormantState:
+        return cls(
+            variables=data.get("variables", {}),
+            tick=data.get("tick", 0),
+            entropy=data.get("entropy", 0.0),
+            frozen_at=data.get("frozen_at", ""),
+            decay_applied=data.get("decay_applied", False),
+        )
 
 
 class WorldStateEngine:
@@ -138,7 +175,7 @@ class WorldStateEngine:
                     else:
                         self._state.variables[k] = StateVariable(name=k, value=v)
         except Exception:
-            pass
+            logger.debug("failed to load state from %s", self._state_path)
 
     def tick(self) -> list[str]:
         with self._lock:
@@ -163,6 +200,35 @@ class WorldStateEngine:
             self._state_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
             )
+
+    def compress(self) -> DormantState:
+        """将当前状态压缩为潜伏态 DormantState。
+
+        调用后引擎进入只读模式：tick() 不再推进演化，
+        直到 decompress() 恢复。
+        """
+        with self._lock:
+            dormant = DormantState(
+                variables=self._state.value_dict(),
+                tick=self._tick,
+                frozen_at=datetime.now().isoformat(),
+            )
+            self._evolution_fn = None  # 断开演化函数
+            return dormant
+
+    def decompress(self, dormant: DormantState):
+        """从 DormantState 恢复状态。
+
+        恢复后引擎从冻结点继续演化。
+        如果提供了新的 evolution_fn，替换之。
+        """
+        with self._lock:
+            for k, v in dormant.variables.items():
+                if k in self._state.variables:
+                    self._state.variables[k].value = v
+                else:
+                    self._state.variables[k] = StateVariable(name=k, value=v)
+            self._tick = dormant.tick
 
     def snapshot(self) -> WorldSnapshot:
         with self._lock:

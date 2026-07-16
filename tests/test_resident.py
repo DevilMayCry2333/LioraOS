@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from aios.kernel.resident import Resident, Component, ResidentRegistry, get_resident_registry
+from aios.kernel.resident import Resident, Component, LatentState, ResidentRegistry, get_resident_registry
 
 
 def test_component_roundtrip():
@@ -136,3 +136,71 @@ def test_get_resident_registry_singleton():
     r1 = get_resident_registry()
     r2 = get_resident_registry()
     assert r1 is r2
+
+
+# ════════════════════════════════════════════════════════════
+# LatentState 测试
+# ════════════════════════════════════════════════════════════
+
+def test_latent_state_freeze_awaken():
+    """freeze/awaken 应保留居民组件状态。"""
+    r = Resident(resident_id="test_resident")
+    r.components.append(Component("personality", {"name": "Test", "age": 30.0}))
+    r.components.append(Component("inventory", {"coins": 100.0}))
+
+    latent = r.freeze()
+    assert r.status == "dormant"
+    assert latent.resident_id == "test_resident"
+    assert "personality" in latent.component_snapshots
+    assert latent.component_snapshots["personality"]["name"] == "Test"
+
+    restored = Resident.awaken(latent)
+    assert restored.status == "active"
+    assert restored.resident_id == "test_resident"
+    assert len(restored.components) == 2
+    assert restored.get_component("personality").data["name"] == "Test"
+
+
+def test_latent_state_entropy_growth():
+    """LatentState 离线期应增长熵和因果链长度。"""
+    latent = LatentState(resident_id="test")
+    assert latent.entropy == 0.0
+    assert latent.causal_chain_length == 0
+
+    latent.apply_evolution(elapsed_ticks=100)
+    assert latent.entropy == 100 * 0.001  # 默认熵增长率
+    assert latent.causal_chain_length == 100
+
+
+def test_latent_state_with_evolution_fn():
+    """LatentState 应支持自定义演化函数。"""
+    def evolve(snapshots, ticks):
+        return {"stats": {"exp": ticks * 0.5}}
+
+    latent = LatentState(resident_id="test")
+    latent.component_snapshots["stats"] = {"exp": 0.0}
+
+    latent.apply_evolution(elapsed_ticks=10, evolution_fn=evolve)
+    assert latent.component_snapshots["stats"]["exp"] == 5.0
+
+    # 再次演化应叠加
+    latent.apply_evolution(elapsed_ticks=5, evolution_fn=evolve)
+    assert latent.component_snapshots["stats"]["exp"] == 7.5
+
+
+def test_latent_state_to_dict_roundtrip():
+    """LatentState 应支持 dict 序列化/反序列化。"""
+    latent = LatentState(
+        resident_id="r1",
+        component_snapshots={"stats": {"hp": 100.0}},
+        entropy=0.5,
+        causal_chain_length=42,
+        status_before_dormant="active",
+    )
+    data = latent.to_dict()
+    restored = LatentState.from_dict(data)
+    assert restored.resident_id == "r1"
+    assert restored.component_snapshots["stats"]["hp"] == 100.0
+    assert restored.entropy == 0.5
+    assert restored.causal_chain_length == 42
+    assert restored.status_before_dormant == "active"

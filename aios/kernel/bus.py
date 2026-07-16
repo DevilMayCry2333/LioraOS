@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger("aios.kernel.bus")
 
 
 class MessageType(str, Enum):
@@ -73,7 +76,7 @@ class MessageBus:
                 try:
                     cb(msg)
                 except Exception:
-                    pass
+                    logger.debug("subscriber callback failed")
 
         return msg.msg_id
 

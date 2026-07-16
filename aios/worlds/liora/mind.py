@@ -8,12 +8,16 @@ Identity Resistance — 感知先经过身份过滤，不同居民理解世界�
 
 from __future__ import annotations
 
+import json
+import logging
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger("aios.worlds.liora.mind")
 
 # ══════════════════════════════════════════════════════════════
 # Identity Resistance — 身份阻尼
@@ -76,9 +80,24 @@ class IdentityProfile:
         return {
             "name": self.name,
             "description": self.description,
+            "style": self.style,
+            "attention_weights": dict(self.attention_weights),
+            "default_weight": self.default_weight,
             "traits": dict(self.traits),
             "forget_rate": self.forget_rate,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "IdentityProfile":
+        return cls(
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            style=data.get("style", ""),
+            attention_weights=dict(data.get("attention_weights", {})),
+            default_weight=data.get("default_weight", 0.4),
+            traits=dict(data.get("traits", {})),
+            forget_rate=data.get("forget_rate", 0.008),
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -173,7 +192,11 @@ class SensitivityProfile:
     silence_tolerance: float = 0.6
 
     def to_dict(self) -> dict:
-        return {k: round(v, 3) for k, v in self.__dict__.items()}
+        return {k: round(v, 3) if isinstance(v, float) else v for k, v in self.__dict__.items()}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SensitivityProfile":
+        return cls(**{k: data.get(k, v) for k, v in cls().__dict__.items()})
 
 
 @dataclass
@@ -185,7 +208,11 @@ class SilentState:
     duration: int = 0
 
     def to_dict(self) -> dict:
-        return self.__dict__
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SilentState":
+        return cls(**{k: data.get(k, v) for k, v in cls().__dict__.items()})
 
 
 @dataclass
@@ -197,7 +224,11 @@ class Intention:
     formed_at_tick: int = 0
 
     def to_dict(self) -> dict:
-        return self.__dict__
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Intention":
+        return cls(**{k: data.get(k, v) for k, v in cls().__dict__.items()})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -236,7 +267,18 @@ class ExperienceState:
             "total": self.total,
             "recent": self.recent[-5:],
             "hum": round(self.hum, 3),
+            "last_tick": self.last_tick,
+            "forget_rate": self.forget_rate,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExperienceState":
+        es = cls(forget_rate=data.get("forget_rate", 0.008))
+        es.total = data.get("total", 0)
+        es.recent = list(data.get("recent", []))
+        es.hum = data.get("hum", 0.0)
+        es.last_tick = data.get("last_tick", 0)
+        return es
 
 
 # ══════════════════════════════════════════════════════════════
@@ -268,6 +310,19 @@ class EpisodicMemoryEntry:
             d["meaning"] = dict(self.meaning)
         return d
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "EpisodicMemoryEntry":
+        return cls(
+            tick=data.get("tick", 0),
+            description=data.get("desc", data.get("description", "")),
+            participants=list(data.get("participants", [])),
+            location=data.get("location", ""),
+            emotional_impact=dict(data.get("emotional_impact", {})),
+            importance=data.get("importance", 0.5),
+            strength=data.get("strength", 1.0),
+            meaning=dict(data.get("meaning", {})),
+        )
+
     @property
     def salience(self) -> float:
         """显著性 = 重要性 × 当前强度。"""
@@ -288,11 +343,23 @@ class RelationshipState:
     emotional_trace: list[dict] = field(default_factory=list)  # 关系变化轨迹
 
     def to_dict(self) -> dict:
-        d = {k: round(v, 3) for k, v in self.__dict__.items()
+        d = {k: round(v, 3) if isinstance(v, float) else v
+             for k, v in self.__dict__.items()
              if k not in ("shared_history", "emotional_trace")}
         d["shared_history"] = self.shared_history[-5:]
         d["emotional_trace"] = self.emotional_trace[-10:]
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RelationshipState":
+        rs = cls(
+            trust=data.get("trust", 0.0),
+            curiosity=data.get("curiosity", 0.0),
+            conflict=data.get("conflict", 0.0),
+        )
+        rs.shared_history = list(data.get("shared_history", []))
+        rs.emotional_trace = list(data.get("emotional_trace", []))
+        return rs
 
     def describe(self) -> str:
         """单句描述（给 prompt）。"""
@@ -822,3 +889,79 @@ class LioraMind:
             "last_action_tick": self.last_action_tick,
             "action_count": len(self._action_history),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LioraMind":
+        """从 dict 恢复 LioraMind 实例。"""
+        mind = cls(name=data.get("name", ""))
+        if "identity" in data:
+            mind.identity = IdentityProfile.from_dict(data["identity"])
+        if "sensitivity" in data:
+            mind.sensitivity = SensitivityProfile.from_dict(data["sensitivity"])
+        if "silent" in data:
+            mind.silent_state = SilentState.from_dict(data["silent"])
+        if "intention" in data and data["intention"]:
+            mind.current_intention = Intention(**data["intention"])
+        if "experience" in data:
+            mind.experience = ExperienceState.from_dict(data["experience"])
+        if "private_events" in data:
+            mind.private_events = list(data["private_events"])
+        if "goals" in data:
+            mind.goals = list(data["goals"])
+        if "beliefs" in data:
+            mind.beliefs = dict(data["beliefs"])
+        if "secrets" in data:
+            mind.secrets = list(data["secrets"])
+        if "public_statements" in data:
+            mind.public_statements = list(data["public_statements"])
+        if "relationships" in data:
+            mind.relationships = {
+                k: RelationshipState.from_dict(v) for k, v in data["relationships"].items()
+            }
+        if "episodes" in data:
+            mind.episodes = [EpisodicMemoryEntry.from_dict(e) for e in data["episodes"]]
+        if "evolution" in data:
+            mind.evolution = list(data["evolution"])
+        if "location" in data:
+            mind.location = data["location"]
+        if "last_action_tick" in data:
+            mind.last_action_tick = data["last_action_tick"]
+        return mind
+
+    def checkpoint(self, directory: str | Path = "data/minds") -> str:
+        """将居民心智状态保存到磁盘。
+
+        Args:
+            directory: 保存目录（每个居民一个 JSON 文件）
+
+        Returns:
+            保存的文件路径
+        """
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+        filepath = path / f"{self.name}.json"
+        data = self.to_dict()
+        data["_saved_at"] = datetime.now().isoformat()
+        filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(filepath)
+
+    @classmethod
+    def restore(cls, name: str, directory: str | Path = "data/minds") -> Optional["LioraMind"]:
+        """从磁盘恢复居民心智状态。
+
+        Args:
+            name: 居民名称
+            directory: 保存目录
+
+        Returns:
+            恢复的 LioraMind 实例，若文件不存在则返回 None
+        """
+        path = Path(directory) / f"{name}.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return cls.from_dict(data)
+        except Exception as e:
+            logger.warning("恢复心智失败 %s: %s", path, e)
+            return None

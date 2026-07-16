@@ -5,7 +5,7 @@
 - 主路由失败时自动回退
 - 支持 function calling（search 工具）
 - 非 tool 模式下的不确定性自动检测 + 补搜
-- SIGALRM 硬超时（替代线程池）
+- urlopen timeout 硬超时（替代 SIGALRM，线程安全）
 
 不负责：对话管理、prompt 构建、历史维护。
 """
@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import signal
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
@@ -26,10 +25,6 @@ from aios.runtime.tools import (
 )
 
 logger = logging.getLogger("aios.model")
-
-
-class TimeoutError(Exception):
-    """模型调用超时。"""
 
 
 @dataclass
@@ -59,27 +54,6 @@ class ModelConfig:
             api_key=os.environ.get(f"{prefix}_API_KEY", ""),
             model_name=os.environ.get(f"{prefix}_MODEL", ""),
         )
-
-
-class _Timeout:
-    """SIGALRM 超时上下文管理器。替代线程池。"""
-
-    def __init__(self, seconds: int):
-        self._seconds = seconds
-
-    def __enter__(self):
-        if self._seconds > 0:
-            signal.signal(signal.SIGALRM, self._handler)
-            signal.alarm(self._seconds)
-        return self
-
-    def __exit__(self, *args):
-        if self._seconds > 0:
-            signal.alarm(0)
-
-    @staticmethod
-    def _handler(signum, frame):
-        raise TimeoutError("模型调用超时")
 
 
 class ModelRuntime:
@@ -117,6 +91,7 @@ class ModelRuntime:
                 return True  # 未设置焦点，不限制
             return budget.can_spend_llm(focus)
         except Exception:
+            logger.debug("budget check failed, defaulting to allow")
             return True
 
     def _spend_budget(self, tool_call: bool = False):
@@ -127,7 +102,7 @@ class ModelRuntime:
             if focus:
                 budget.spend_llm(focus, tool_call=tool_call)
         except Exception:
-            pass
+            logger.debug("budget spend failed")
 
     def chat(self, messages: list[dict], temperature: float = 0.7,
              max_tokens: int = 512,
@@ -243,7 +218,7 @@ class ModelRuntime:
                         self._spend_budget(tool_call=False)
                         return enriched_reply
                 except Exception:
-                    pass
+                    logger.debug("enriched reply call failed, returning original")
 
         return last_reply
 
@@ -268,9 +243,9 @@ class ModelRuntime:
 
             req = urllib.request.Request(cfg.url, data=payload, headers=headers,
                                           method="POST")
-            with _Timeout(self._timeout):
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                    result = json.loads(resp.read().decode("utf-8"))
+
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
 
             choice = result.get("choices", [{}])[0]
             msg = choice.get("message", {})
@@ -341,7 +316,7 @@ class ModelRuntime:
                             f"📡 [搜索结果: {query}]\n"
                             f"   {abstract[:500]}")
             except Exception:
-                pass
+                logger.debug("DuckDuckGo fallback search failed for: %s", query)
 
         return None
 
@@ -362,9 +337,8 @@ class ModelRuntime:
         req = urllib.request.Request(cfg.url, data=payload, headers=headers,
                                       method="POST")
 
-        with _Timeout(self._timeout):
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
 
         return (
             result.get("choices", [{}])[0]

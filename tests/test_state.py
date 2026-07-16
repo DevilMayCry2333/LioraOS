@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aios.kernel.state import (
     StateVariable, WorldState, WorldSnapshot,
-    WorldStateEngine, get_world_state_engine,
+    WorldStateEngine, DormantState, get_world_state_engine,
 )
 
 
@@ -174,3 +174,64 @@ def test_get_world_state_engine_singleton():
     e1 = get_world_state_engine()
     e2 = get_world_state_engine()
     assert e1 is e2
+
+
+# ════════════════════════════════════════════════════════════
+# DormantState 测试
+# ════════════════════════════════════════════════════════════
+
+def test_dormant_state_compress():
+    """compress() 应将状态压缩为 DormantState 并断开 evolution_fn。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = WorldStateEngine(state_path=Path(tmp) / "state.json")
+        engine.initialize({
+            "x": StateVariable("x", 10.0, min_value=0, max_value=100),
+        })
+        engine.tick()
+        engine.tick()
+
+        dormant = engine.compress()
+        assert dormant.tick == 2
+        assert dormant.variables["x"] == 10.0
+        assert isinstance(dormant.frozen_at, str)
+        assert dormant.frozen_at != ""
+        # compress 后不再有 evolution_fn
+        changes = engine.tick()
+        assert changes == []  # 无 evolution_fn，只推进计数
+
+
+def test_dormant_state_decompress():
+    """decompress() 应从 DormantState 恢复状态。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = WorldStateEngine(state_path=Path(tmp) / "state.json")
+        engine.initialize({
+            "x": StateVariable("x", 42.0, min_value=0, max_value=100),
+        })
+        engine.tick()
+
+        dormant = engine.compress()
+        # 模拟新引擎
+        engine2 = WorldStateEngine(state_path=Path(tmp) / "state.json")
+        engine2.initialize({
+            "x": StateVariable("x", 0.0, min_value=0, max_value=100),
+        })
+        engine2.decompress(dormant)
+        snap = engine2.snapshot()
+        assert snap.variables["x"] == 42.0
+        assert snap.tick == 1
+
+
+def test_dormant_state_to_dict_roundtrip():
+    """DormantState 应支持 dict 序列化/反序列化。"""
+    d = DormantState(
+        variables={"a": 1.0, "b": 2.0},
+        tick=5,
+        entropy=0.1,
+        frozen_at="2026-07-15T10:30:00",
+    )
+    data = d.to_dict()
+    restored = DormantState.from_dict(data)
+    assert restored.variables == {"a": 1.0, "b": 2.0}
+    assert restored.tick == 5
+    assert restored.entropy == 0.1
+    assert restored.frozen_at == "2026-07-15T10:30:00"

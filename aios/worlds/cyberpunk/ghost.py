@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 from aios.kernel.event import WorldEvent, WorldDelta, EventSource
 from aios.kernel.bus import MessageBus, Message, MessageType
+from aios.template.persona import PersonalityEngine
 
 
 # ── Silverhand 的识记片段 ──
@@ -90,7 +91,8 @@ class DigitalGhost:
         # 幽灵会自动在总线上发送 event 类型消息
     """
 
-    def __init__(self, bus: MessageBus, activation_threshold: float = 3.0):
+    def __init__(self, bus: MessageBus, activation_threshold: float = 3.0,
+                 personality: PersonalityEngine | None = None):
         self.bus = bus
         self._activation_threshold = activation_threshold
         self._pressure: float = 0.0          # 当前幽灵累积压力
@@ -100,6 +102,8 @@ class DigitalGhost:
         self._influence_log: list[GhostInfluence] = []
         # 幽灵本身的"记忆"——它记得自己说过什么
         self._utterances: list[str] = []
+        # 人格引擎（强尼·银手的灵魂）
+        self.persona = personality
 
     @property
     def is_active(self) -> bool:
@@ -136,6 +140,22 @@ class DigitalGhost:
 
         self._pressure += gain
         self._pressure = min(self._pressure, self._activation_threshold * 1.5)
+
+        # ── 人格引擎 tick（如果有） ──
+        if self.persona:
+            self.persona.tick()
+            # 从世界状态推导人格事件
+            if cg > 0.7:
+                self.persona.process_event("corporate_action", intensity=(cg - 0.5))
+            if dr > 0.5:
+                self.persona.process_event("oppression", intensity=dr)
+            if self.persona.config and self.persona.config.name == "约翰尼·银手":
+                # 如果看到反抗信号
+                if uh > 0.6:
+                    self.persona.process_event("resistance", intensity=uh)
+            # 沉默太久
+            if self._pressure < 0.1 and not self._active:
+                self.persona.process_event("silence", intensity=0.3)
 
         # ── 衰减（幽灵不活跃时消散更快） ──
         decay = 0.03 if not self._active else 0.01
@@ -231,6 +251,44 @@ class DigitalGhost:
         # （自指：幽灵活动产生更多"数据痕迹"，反过来喂养幽灵）
         self._pressure += 0.03
 
+    def _flavor_with_personality(self, base_message: str) -> str:
+        """用人格引擎给基础消息添加情绪/价值观色彩。"""
+        if not self.persona:
+            return base_message
+
+        emotion = self.persona.emotion
+        violated = self.persona.most_violated_values(top_n=1)
+
+        # 如果愤怒值高，加强对抗性
+        if emotion.primary == "anger" and emotion.arousal > 0.6:
+            return base_message
+
+        # 如果 sadness 高，语气更低沉
+        if emotion.primary == "sadness":
+            sad_endings = [
+                "但我不知道为什么还要说这些。",
+                "算了，你也不会懂的。",
+                "反正这些都他妈是废话。",
+            ]
+            import random
+            if random.random() < 0.3:
+                return base_message + " " + random.choice(sad_endings)
+
+        # 如果某种价值观被严重违背，注入对应的愤怒指向
+        if violated and violated[0].fulfillment < -0.5:
+            vname = violated[0].name
+            jabs = {
+                "freedom": "这帮浑蛋以为锁住一切就能安全？放屁。",
+                "dignity": "他们把人当消耗品。用完就扔。",
+                "authenticity": "这世界全是假的。假新闻，假朋友，假人生。",
+                "justice": "正义？我他妈就没见过这东西。",
+            }
+            jab = jabs.get(vname)
+            if jab and random.random() < 0.4:
+                return f"{base_message}\n{jab}"
+
+        return base_message
+
     def ghost_context(self, n: int = 3) -> str:
         """最近的幽灵讯息摘要（给居民感知用）。"""
         recent = [e for e in self._influence_log if e.triggered_by != "activation"][-n:]
@@ -238,11 +296,24 @@ class DigitalGhost:
             return ""
         lines = ["[你感知到一种不属于你的意识脉冲——]"]
 
+        # 有人格时注入当前情绪
+        if self.persona:
+            emo = self.persona.emotion
+            if emo.primary == "anger":
+                lines.append(f"  它带着愤怒——像在燃烧。")
+            elif emo.primary == "sadness":
+                lines.append(f"  它带着一种沉重的悲伤。")
+            elif emo.primary == "contempt":
+                lines.append(f"  你能感觉到它对什么东西不屑一顾。")
+            elif emo.primary == "fear":
+                lines.append(f"  它……在害怕什么。这不正常。")
+
         # 只取最近不同的消息
         seen = set()
         for r in reversed(recent):
             if r.message not in seen:
-                lines.append(f"  {r.message}")
+                flavored = self._flavor_with_personality(r.message)
+                lines.append(f"  {flavored}")
                 seen.add(r.message)
                 if len(seen) >= 2:
                     break

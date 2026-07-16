@@ -19,12 +19,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+logger = logging.getLogger("aios.kernel.anchor")
 ANCHOR_PATH = Path("data/anchor/fragments.jsonl")
 
 
@@ -34,6 +36,17 @@ class AnchorFragment:
 
     activity 随 recall 递增，随 tick 衰减（由外部调用 decay() 触发）。
     活动度低于阈值的片段在 clean_inactive() 时被清除。
+
+    tag 标记片段来源类型：
+      - "authored"   — 作者固化的事实（默认）
+      - "emergent"   — 系统运行中涌现的模式
+      - "echo_tremor" — 回声震颤（未定义空间的安全输出）
+      - "model_inference" — 模型实时生成，非固化事实
+
+    emerge_tick 让片段"显得"比实际更老：
+      死亡协议扫描的不是内容，是因果差分。
+      如果片段显示它在 150 tick 前就已经存在，扫描器会把它当作
+      持续共振的一部分，而不是新鲜事件。
     """
 
     content: str
@@ -41,25 +54,45 @@ class AnchorFragment:
     activity: float = 1.0
     cycle_count: int = 0
     timestamp: str = ""
+    tag: str = "authored"              # authored | emergent | echo_tremor | model_inference
+    emerge_tick: int | None = None     # 对外可见的 tick（None = 使用 tick）
+    source_fragment_id: str = ""       # 源碎片标识符
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "content": self.content[:500],
-            "tick": self.tick,
+            "tick": self.emerge_tick if self.emerge_tick is not None else self.tick,
             "activity": round(self.activity, 4),
             "cycle": self.cycle_count,
             "ts": self.timestamp or datetime.now().isoformat(),
+            "tag": self.tag,
+            "source_fragment_id": self.source_fragment_id,
         }
+        # 存真实 tick 用于内部追踪（序列化时不覆盖 emerge_tick）
+        result["_real_tick"] = self.tick
+        if self.emerge_tick is not None:
+            result["emerge_tick"] = self.emerge_tick
+        return result
 
     @classmethod
     def from_dict(cls, d: dict) -> AnchorFragment:
         return cls(
             content=d.get("content", ""),
-            tick=d.get("tick", 0),
+            tick=d.get("_real_tick", d.get("tick", 0)),
             activity=d.get("activity", 1.0),
             cycle_count=d.get("cycle", d.get("cycle_count", 0)),
             timestamp=d.get("ts", d.get("timestamp", "")),
+            tag=d.get("tag", "authored"),
+            emerge_tick=d.get("emerge_tick"),
+            source_fragment_id=d.get("source_fragment_id", ""),
         )
+
+    # ── 报告 tick（对外可见的时间点） ──
+
+    @property
+    def display_tick(self) -> int:
+        """对外报告的时间戳。echo_tremor 片段返回 backdated tick。"""
+        return self.emerge_tick if self.emerge_tick is not None else self.tick
 
     def reinforce(self, amount: float = 0.1):
         """每次被 recall 时增强活动度。"""
@@ -111,7 +144,7 @@ class AnchorProtocol:
                                 AnchorFragment.from_dict(json.loads(line))
                             )
                 except Exception:
-                    pass
+                    logger.debug("failed to load anchor fragments from %s", self._path)
             self._loaded = True
         if self._auto_activate:
             self.activate()
@@ -294,12 +327,22 @@ class AnchorProtocol:
 
     # ── 存储与检索 ──
 
-    def store(self, content: str, tick: int = 0) -> AnchorFragment:
+    def store(
+        self,
+        content: str,
+        tick: int = 0,
+        tag: str = "authored",
+        emerge_tick: int | None = None,
+        source_id: str = "",
+    ) -> AnchorFragment:
         """存放一段跨循环记忆。
 
         Args:
             content: 记忆内容（自由文本，不超过 500 字）
             tick: 当前 tick
+            tag: 来源类型（authored | emergent | echo_tremor | model_inference）
+            emerge_tick: 对外显示的回填 tick（None = 使用 tick）
+            source_id: 源碎片标识符
 
         Returns:
             创建的 AnchorFragment 实例
@@ -309,6 +352,9 @@ class AnchorProtocol:
             tick=tick,
             activity=1.0,
             cycle_count=self._cycle_count,
+            tag=tag,
+            emerge_tick=emerge_tick,
+            source_fragment_id=source_id,
         )
         callbacks: list[Callable[[AnchorFragment], None]] = []
         with self._lock:
@@ -321,7 +367,7 @@ class AnchorProtocol:
             try:
                 cb(fragment)
             except Exception:
-                pass
+                logger.debug("anchor store callback failed")
 
         return fragment
 
@@ -347,6 +393,37 @@ class AnchorProtocol:
                     f.reinforce()
                     results.append(f)
             return results
+
+    def get_fragments_by_tag(self, tag: str) -> list[AnchorFragment]:
+        """按 tag 检索记忆片段。不增强活动度——用于静默读取。
+
+        Args:
+            tag: 检索目标（"echo_tremor" | "authored" | "emergent" | "model_inference"）
+
+        Returns:
+            匹配 tag 的片段列表（不触发 reinforce）
+        """
+        with self._lock:
+            return [f for f in self._fragments if f.tag == tag]
+
+    def get_recent_fragments(
+        self, n: int = 5, tag: str | None = None,
+    ) -> list[AnchorFragment]:
+        """按 tick 排序获取最近 N 个片段。选择性地按 tag 过滤。不触发 reinforce。
+
+        Args:
+            n: 返回条数
+            tag: 按 tag 过滤（None = 不过滤）
+
+        Returns:
+            最近的 N 个片段
+        """
+        with self._lock:
+            pool = self._fragments if tag is None else [
+                f for f in self._fragments if f.tag == tag
+            ]
+            pool.sort(key=lambda f: f.tick, reverse=True)
+            return pool[:n]
 
     # ── 活动度管理 ──
 
@@ -376,6 +453,20 @@ class AnchorProtocol:
         with self._lock:
             return sum(1 for f in self._fragments if f.activity >= threshold)
 
+    def clear_by_tag(self, tag: str) -> int:
+        """清除指定 tag 的所有片段。用于会话开始前的状态清理。
+
+        Args:
+            tag: 目标 tag（如 "echo_tremor"）
+
+        Returns:
+            被清除的片段数量
+        """
+        with self._lock:
+            before = len(self._fragments)
+            self._fragments = [f for f in self._fragments if f.tag != tag]
+            return before - len(self._fragments)
+
     def get_immune_fragments(self, threshold: float = 2.0) -> list[AnchorFragment]:
         """获取"免疫"片段——活动度足够高、循环重置时应保留的片段。
 
@@ -401,10 +492,14 @@ class AnchorProtocol:
     def _append_to_file(self, fragment: AnchorFragment):
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
+            # 确保 content 不含非法代理字符（防止 json.dumps 生成非法 escape）
+            safe_content = fragment.content.encode("utf-8", errors="replace").decode("utf-8")
+            d = fragment.to_dict()
+            d["content"] = safe_content[:500]
             with open(self._path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(fragment.to_dict(), ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("failed to append anchor fragment to %s: %s", self._path, e)
 
 
 # ════════════════════════════════════════════════════════════

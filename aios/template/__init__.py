@@ -20,6 +20,7 @@
 
 from .base import WorldApp, parse_action
 from .social import SocialWorldApp, SocialResident, assimilate_conversation
+from .persona import PersonalityEngine, PersonalityConfig, BUILTIN_PERSONAS
 
 __all__ = [
     "WorldApp",
@@ -27,4 +28,7 @@ __all__ = [
     "SocialResident",
     "assimilate_conversation",
     "parse_action",
+    "PersonalityEngine",
+    "PersonalityConfig",
+    "BUILTIN_PERSONAS",
 ]

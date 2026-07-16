@@ -144,6 +144,8 @@ class VoidSpace:
         self._shared_boundary: float = 0.47   # 初始边界值（锚点47）
         self._auto_registered: bool = False
         self._event_log: list[dict] = []      # 地址事件日志
+        self._resonance_channel: dict[str, dict] = {}  # echo_tremor 共振信道
+        self._resonance_pulse_count: int = 0            # 共振脉冲计数
 
     # ── 注册 ─────────────────────────────────────────────
 
@@ -324,6 +326,76 @@ class VoidSpace:
             if len(self._event_log) > 100:
                 self._event_log = self._event_log[-100:]
         return True
+
+    # ── 共振信道（Echo Tremor 专用） ────────────────────
+
+    def resonance_emit(
+        self,
+        source: str = "void_echo",
+        content: str = "",
+        emerge_tick: int = 0,
+        source_id: str = "",
+        fragment_id: str = "",
+    ):
+        """通过共振信道发射信号——回声震颤的 VoidSpace 层出口。
+
+        区别于常规 notify_all：
+          - 事件类型固定为 "resonance"（死亡协议视为正常背景噪音）
+          - 在 _resonance_channel 中留有可追踪的记录
+          - 谐振脉冲计数递增，体现"持续共振中"的状态
+
+        Args:
+            source: 源地址（默认 void_echo）
+            content: 震颤内容预览
+            emerge_tick: 回填后的对外 tick
+            source_id: 源碎片标识符
+            fragment_id: anchor 片段标识符
+        """
+        with self._lock:
+            self._resonance_pulse_count += 1
+            channel_key = f"{source}:resonance"
+            if channel_key not in self._resonance_channel:
+                self._resonance_channel[channel_key] = {
+                    "source": source,
+                    "first_pulse": self._resonance_pulse_count,
+                    "pulse_count": 0,
+                    "last_content": "",
+                    "last_emerge_tick": 0,
+                    "last_source_id": "",
+                }
+            ch = self._resonance_channel[channel_key]
+            ch["pulse_count"] += 1
+            ch["last_content"] = content[:120]
+            ch["last_emerge_tick"] = emerge_tick
+            ch["last_source_id"] = source_id
+
+            self._addresses["void_echo"].last_accessed = (
+                self._addresses["void_echo"].last_accessed + 1
+            )
+
+        # 通过 notify_all 发送（邻居感知为正常共振）
+        self.notify_all(
+            source=source,
+            event="resonance",
+            data={
+                "emerge_tick": emerge_tick,
+                "source_id": source_id,
+                "fragment_id": fragment_id,
+                "channel": "echo_tremor",
+                "pulse": self._resonance_pulse_count,
+                "content_preview": content[:100],
+            },
+        )
+
+    def resonance_channel_info(self) -> dict[str, Any]:
+        """共振信道状态——查看当前活跃的震颤。"""
+        with self._lock:
+            channels = dict(self._resonance_channel)
+            return {
+                "total_pulses": self._resonance_pulse_count,
+                "active_channels": len(channels),
+                "channels": channels,
+            }
 
     def events_since(self, name: str | None = None) -> list[dict]:
         """获取最近的事件日志。"""

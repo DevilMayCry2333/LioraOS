@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ from aios.kernel.bus import MessageBus, Message, MessageType
 from aios.kernel.spec import WorldSpec
 from aios.kernel.history import WorldHistory
 from aios.kernel.metafield import MetaField, get_metafield
+
+logger = logging.getLogger("aios.runtime.world_runtime")
 
 
 @dataclass
@@ -46,7 +49,9 @@ class WorldRuntime:
 
     def __init__(self, spec: WorldSpec, data_dir: str = "data",
                  interval: float = 15.0,
-                 metafield: Optional[MetaField] = None):
+                 metafield: Optional[MetaField] = None,
+                 odin_sweep: bool = False,
+                 odin_sweep_interval: int = 50):
         self.spec = spec
         world_dir = Path(data_dir) / spec.name
         world_dir.mkdir(parents=True, exist_ok=True)
@@ -68,6 +73,11 @@ class WorldRuntime:
 
         # MetaField 心跳
         self._metafield: Optional[MetaField] = metafield
+
+        # 奥丁（死亡协议运行时）定期扫描
+        self._odin_sweep_enabled = odin_sweep
+        self._odin_sweep_interval = odin_sweep_interval
+        self._odin = None  # 延迟初始化
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -134,7 +144,25 @@ class WorldRuntime:
             try:
                 self._metafield.pulse()
             except Exception:
-                pass
+                logger.debug("MetaField pulse failed")
+
+        # 5. 奥丁巡 sweep（定期扫描沉寂宇宙）
+        if self._odin_sweep_enabled:
+            try:
+                if self._tick_count % self._odin_sweep_interval == 0:
+                    if self._odin is None:
+                        from aios.kernel.odin import get_odin
+                        self._odin = get_odin()
+                    results = self._odin.sweep(tick=self._tick_count)
+                    for r in results:
+                        if r.get("success"):
+                            logger.info(
+                                "奥丁归档: %s (%s)",
+                                r.get("signature_id", "?")[:8],
+                                r.get("reason", ""),
+                            )
+            except Exception:
+                logger.debug("Odin sweep failed")
 
     # ── 世界物体 ──────────────────────────────────
 
@@ -282,36 +310,18 @@ class WorldRuntime:
     # ── 感知接口 ──────────────────────────────────
 
     def format_for_perception(self) -> str:
-        """格式化世界状态为 LLM 可读文本。"""
+        """格式化世界状态为 LLM 可读文本（通用版本）。
+
+        不包含任何世界专有名词——世界作者应覆盖
+        WorldApp.describe_world() 提供诗意的自然语言描述。
+        """
         snap = self.snapshot()
-        lines = [f"Tick {snap.tick} 的回声山谷："]
+        lines = [f"Tick {snap.tick} 的世界状态："]
 
-        # 只选几个关键变量自然描述
         vars = snap.state
-        descs = []
-        if "temperature" in vars:
-            t = vars["temperature"]
-            if t > 25: descs.append(f"温度偏暖（{t:.1f}°C）")
-            elif t < 18: descs.append(f"温度偏凉（{t:.1f}°C）")
-            else: descs.append(f"温度宜人（{t:.1f}°C）")
-        if "wind_speed" in vars:
-            w = vars["wind_speed"]
-            if w > 1.5: descs.append("风比较大")
-            elif w < 0.3: descs.append("风很轻")
-            else: descs.append("微风")
-        if "echo_density" in vars:
-            e = vars["echo_density"]
-            if e > 0.6: descs.append("回声充盈")
-            elif e > 0.3: descs.append("有回声")
-            else: descs.append("回声稀疏")
-        if "humidity" in vars:
-            h = vars["humidity"]
-            if h > 0.7: descs.append("空气潮湿")
-            elif h < 0.4: descs.append("空气干燥")
-            else: descs.append("湿度适中")
-
-        if descs:
-            lines.append(f"  {', '.join(descs)}。")
+        if vars:
+            items = [f"{k}={v:.3f}" for k, v in sorted(vars.items())]
+            lines.append(f"  {', '.join(items)}。")
 
         # 事件
         if snap.events:
@@ -321,6 +331,6 @@ class WorldRuntime:
                     lines.append(f"  {desc}。")
 
         if snap.unknown_level > 0.3:
-            lines.append(f"  有一种无法解释的低沉嗡鸣在空气中弥漫。")
+            lines.append("  有一种无法解释的低沉嗡鸣在空气中弥漫。")
 
         return "\n".join(lines)

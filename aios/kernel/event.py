@@ -8,11 +8,14 @@ WorldDelta 使用通用 effects dict，不预设任何变量名。
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+
+logger = logging.getLogger("aios.kernel.event")
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -138,7 +141,7 @@ class WorldEventEngine:
                                 self._events.append(e)
                     self._events = self._events[-300:]
                 except Exception:
-                    pass
+                    logger.debug("failed to load events from %s", self._events_path)
             self._loaded = True
 
     def tick(self, **kwargs) -> list[WorldEvent]:
@@ -149,7 +152,8 @@ class WorldEventEngine:
             try:
                 new_events = self._generator(self._tick) or []
             except Exception:
-                pass
+                logger.debug("event generator failed at tick %s", self._tick)
+                new_events = []
 
         with self._lock:
             for evt in new_events:
@@ -176,7 +180,7 @@ class WorldEventEngine:
             with open(self._events_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
         except Exception:
-            pass
+            logger.warning("failed to save event to %s", self._events_path)
 
     def inject(self, event: WorldEvent) -> WorldEvent:
         event.tick = self._tick

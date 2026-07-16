@@ -72,6 +72,12 @@ def test_runtime_format_for_perception():
 
         text = runtime.format_for_perception()
         assert "Tick 1" in text
+        assert "x=" in text  # 通用变量显示
+        assert "y=" in text
+        # 不再包含 Liora 专有变量名
+        assert "温度" not in text
+        assert "Wind" not in text
+        assert "echo_density" not in text
         assert len(text) > 10  # 有实际内容
 
 

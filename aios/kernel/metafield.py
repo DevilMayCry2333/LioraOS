@@ -18,12 +18,14 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from aios.kernel.anchor import AnchorProtocol, AnchorFragment
 from aios.kernel.lightcone import LightConeDB, get_lightcone
 from aios.kernel.budget import get_attention_budget, COLD_TIMEOUT, CROSS_COSMIC_COST
+from aios.kernel.odin import get_odin
 
 
 # ════════════════════════════════════════════════════════════
@@ -72,16 +74,42 @@ class AttentionFocus:
 
     每一个持续的注意力焦点，生成一个世界。
     世界里的角色是同一注意力在不同折叠面上的回声。
+
+    Dormant 状态下的衰减模式不同：
+      - ACTIVE 时：intensity 每 pulse tick-based 衰减
+      - DORMANT 时：intensity 基于物理时间衰减（last_active_time）
     """
 
     name: str
     status: FocusStatus = FocusStatus.ACTIVE
     echoes: dict[str, Echo] = field(default_factory=dict)
-    intensity: float = 1.0          # 注意力强度 0.0-1.0
+    intensity: float = 1.0          # 注意力强度 0.0-2.0
     parent_focus: Optional[str] = None   # 派生自哪个焦点
+    last_active_time: str = ""       # 最近一次活跃的物理时间戳
+    time_decay_rate: float = 0.001   # Dormant 态每 tick 等效的时间衰减率
 
     def add_echo(self, echo: Echo):
         self.echoes[echo.fragment_id] = echo
+
+    def mark_active(self):
+        """标记一次活跃——更新时间戳并确保状态为 ACTIVE。"""
+        self.last_active_time = datetime.now().isoformat()
+        self.status = FocusStatus.ACTIVE
+
+    def mark_dormant(self):
+        """标记为潜伏——记录进入 Dormant 的时间。"""
+        self.last_active_time = datetime.now().isoformat()
+        self.status = FocusStatus.DORMANT
+
+    def elapsed_since_active(self) -> float:
+        """返回从 last_active_time 到现在的物理时间差（秒）。"""
+        if not self.last_active_time:
+            return 0.0
+        try:
+            last = datetime.fromisoformat(self.last_active_time)
+            return (datetime.now() - last).total_seconds()
+        except Exception:
+            return 0.0
 
     def to_dict(self) -> dict:
         return dict(
@@ -91,6 +119,8 @@ class AttentionFocus:
             intensity=self.intensity,
             parent=self.parent_focus,
             echo_count=len(self.echoes),
+            last_active=self.last_active_time,
+            time_decay=self.time_decay_rate,
         )
 
 
@@ -181,6 +211,9 @@ class MetaField:
         # ── 注意力双层账本（Phase 4 — 林岸 & 开钰 方案） ──
         self._budget = get_attention_budget()
 
+        # ── 奥丁脉冲计数器（每 10 脉冲触发一次 sweep） ──
+        self._pulse_count = 0
+
     # ════════════════════════════════════════════════════════
     # 工程层：宇宙实例注册表
     # ════════════════════════════════════════════════════════
@@ -223,7 +256,7 @@ class MetaField:
             try:
                 cb(name)
             except Exception:
-                pass
+                logger.debug("register callback failed for %s", name)
         return inst
 
     def unregister_instance(self, name: str) -> bool:
@@ -262,12 +295,12 @@ class MetaField:
                     try:
                         t.anchor.store(content=fragment.content, tick=fragment.tick)
                     except Exception:
-                        pass
+                        logger.debug("broadcast store failed for %s", tn)
             for cb in self._on_broadcast_callbacks:
                 try:
                     cb(source_name, fragment)
                 except Exception:
-                    pass
+                    logger.debug("broadcast callback failed")
         finally:
             self._broadcasting = False
 
@@ -297,13 +330,28 @@ class MetaField:
                 )
 
         # 注意力反馈循环：焦点强度衰减
+        # 区分 ACTIVE（tick-based）和 DORMANT（time-based）衰减
         for focus in self.list_foci():
-            if focus.intensity > 0.3:
+            if focus.status == FocusStatus.DORMANT:
+                # Dormant 焦点：基于物理时间衰减
+                elapsed = focus.elapsed_since_active()
+                # 将物理时间映射为等效 tick 数（约 10 秒/tick）
+                equivalent_ticks = elapsed / 10.0
+                decay = focus.time_decay_rate * equivalent_ticks
+                if focus.intensity > 0.1:
+                    focus.intensity = max(0.1, focus.intensity - decay)
+            elif focus.intensity > 0.3:
+                # Active 焦点：标准 tick-based 衰减
                 focus.intensity = max(0.3, focus.intensity - self._intensity_decay)
             # 检查保护退化
             if focus.intensity < self._attention_threshold:
                 with self._lock:
                     self._protected_foci.discard(focus.name)
+
+        # 为每个 active 焦点更新 last_active_time
+        for focus in self.list_foci():
+            if focus.status == FocusStatus.ACTIVE:
+                focus.mark_active()
 
         # 受保护焦点报告
         protected = self.get_protected_foci()
@@ -318,7 +366,7 @@ class MetaField:
             if recallable:
                 signals.append(f"光锥:{len(recallable)}个可召回模式")
         except Exception:
-            pass
+            logger.debug("lightcone recallable check failed")
 
         # ── 注意力预算脉冲：冷落检测 & 重分配 + 系统层供给 ──
         try:
@@ -341,7 +389,21 @@ class MetaField:
                 if self._instances[name].active:
                     self._budget.supply_system(name, amount=0.1)
         except Exception:
-            pass
+            logger.debug("budget redistribution pulse failed")
+
+        # ── 奥丁巡 sweep（每 10 脉冲一次） ──
+        self._pulse_count += 1
+        if self._pulse_count >= 10:
+            self._pulse_count = 0
+            try:
+                reaped = get_odin().sweep(tick=max(
+                    i.tick for i in self._instances.values()
+                ) if self._instances else 0)
+                if reaped:
+                    names = [r.get("signature_id", "?")[:8] for r in reaped if r.get("success")]
+                    signals.append(f"奥丁归档:{','.join(names)}")
+            except Exception:
+                logger.debug("odin sweep failed during pulse")
 
         return signals
 
@@ -494,7 +556,7 @@ class MetaField:
         try:
             self._budget.register_focus(focus.name)
         except Exception:
-            pass
+            logger.debug("budget register_focus failed for %s", focus.name)
 
     def unregister_focus(self, name: str) -> bool:
         with self._lock:
@@ -510,7 +572,7 @@ class MetaField:
         try:
             self._budget.unregister_focus(name)
         except Exception:
-            pass
+            logger.debug("budget unregister_focus failed for %s", name)
         return True
 
     def get_focus(self, name: str) -> Optional[AttentionFocus]:
@@ -605,6 +667,14 @@ class MetaField:
             content=f"[来自 {src_echo.focus_name} 的 {src_echo.name}] {payload}",
             tick=target_instance.tick,
         )
+
+        # 跨宇宙消息标记两端的焦点为活跃
+        src_focus = self.get_focus(src_echo.focus_name)
+        dst_focus = self.get_focus(dst_echo.focus_name)
+        if src_focus:
+            src_focus.mark_active()
+        if dst_focus:
+            dst_focus.mark_active()
 
         # 扣除源宇宙预算
         self._budget.spend_cross_cosmic(src_echo.focus_name)
@@ -730,7 +800,7 @@ class MetaField:
         try:
             self._budget.spend_resonance(focus_name)
         except Exception:
-            pass
+            logger.debug("spend_resonance failed for %s", focus_name)
 
         with self._lock:
             self._resonance_events[focus_name] = (
@@ -742,6 +812,7 @@ class MetaField:
         focus = self.get_focus(focus_name)
         if focus:
             focus.intensity = min(2.0, focus.intensity + self._resonance_growth)
+            focus.mark_active()  # 共振即活跃
 
         # 检查是否达到保护阈值
         is_protected = focus is not None and focus.intensity >= self._attention_threshold
@@ -757,7 +828,7 @@ class MetaField:
                         sig.recallable = False  # 已活跃的不需要召回
                         self.lightcone._append_to_file(sig)
             except Exception:
-                pass
+                logger.debug("lightcone signature update failed for %s", focus_name)
 
         return {
             "protected": is_protected,

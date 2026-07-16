@@ -12,7 +12,6 @@ import json
 import logging
 import random
 import re
-import signal
 import sys
 import time
 from datetime import datetime
@@ -26,26 +25,18 @@ from aios.kernel.budget import get_attention_budget
 from aios.kernel.metafield import get_metafield
 
 from .base import WorldApp
+from .persona import PersonalityEngine, BUILTIN_PERSONAS
+from aios.kernel.language import (
+    LanguageAttractor, EverydayState,
+    roll_everyday, enforce_budget,
+)
 
 logger = logging.getLogger("aios.template.social")
 
 BASE = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(BASE))
 
-MODEL_TIMEOUT = 30
 MAX_HISTORY = 12
-
-
-# ── SIGALRM 超时 ──
-class ModelCallTimeout(Exception):
-    pass
-
-
-def _timeout_handler(signum, frame):
-    raise ModelCallTimeout(f"模型调用超过 {MODEL_TIMEOUT}s")
-
-
-signal.signal(signal.SIGALRM, _timeout_handler)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -135,11 +126,24 @@ class SocialResident:
         self.mind = LioraMind(name)
         app._apply_character_config(self.mind, name)
 
+        # 人格引擎（可选）
+        self.persona: Optional[PersonalityEngine] = None
+        if hasattr(app, 'persona_presets') and name in app.persona_presets:
+            try:
+                preset_name = app.persona_presets[name]
+                self.persona = PersonalityEngine.from_preset(preset_name)
+            except (KeyError, Exception) as e:
+                logger.debug("persona init failed for %s: %s", name, e)
+
         persona = ""
         if name in app.character_config:
             persona = app.character_config[name].get("persona", "")
         if not persona:
             persona = app.mind.identity.style if name == app.character_name else f"你是 {name}。直接说话。"
+        # 语言动力学（日常打断 + 发言预算）
+        self.language: LanguageAttractor = LanguageAttractor()
+        self.everyday: EverydayState = EverydayState()
+
         self.history: list[dict] = [
             {"role": "system", "content": persona}
         ]
@@ -147,11 +151,11 @@ class SocialResident:
 
     def hear_world(self, context: str):
         if context.strip():
-            self.history.append({"role": "user", "content": context[:2000]})
+            self.history.append({"role": "user", "content": context[:4096]})
 
     def hear_speaker(self, speaker: str, message: str, tick: int = -1):
         self.mind.relate(speaker, trust=0.03, curiosity=0.02, tick=tick)
-        self.history.append({"role": "user", "content": f"{speaker} 说：{message[:500]}"})
+        self.history.append({"role": "user", "content": f"{speaker} 说：{message[:4096]}"})
 
     def build_messages(self, partner_name: str = "") -> list[dict]:
         sys_msgs = [m for m in self.history if m["role"] == "system"]
@@ -173,6 +177,19 @@ class SocialResident:
         if growth:
             messages.append({"role": "user", "content": growth})
 
+        # 人格引擎上下文（如果有）
+        if self.persona:
+            ctx = self.persona.full_context()
+            if ctx.strip():
+                messages.append({"role": "user", "content": f"（{ctx}）"})
+
+        # 日常状态（语言吸引子）
+        if self.everyday.active:
+            messages.append({
+                "role": "user",
+                "content": f"（心里装着点小事：{self.everyday.state}）",
+            })
+
         messages.append({"role": "user", "content": "现在直接说出你想说的话："})
         return messages
 
@@ -180,26 +197,27 @@ class SocialResident:
         if not self.model:
             return self.app.mock_reply(self.name)
 
+        # 语言吸引子：投日常状态
+        self.everyday = roll_everyday(self.language)
+
         messages = self.build_messages(partner_name=partner_name)
         t0 = time.time()
-        signal.alarm(MODEL_TIMEOUT)
         try:
             response = self.model.chat(messages, temperature=0.75, max_tokens=4096)
             self._last_elapsed = time.time() - t0
-        except ModelCallTimeout:
-            self._last_elapsed = time.time() - t0
-            return ""
         except Exception as e:
             self._last_elapsed = time.time() - t0
             logger.warning("%s model error: %s", self.name, e)
             return ""
-        finally:
-            signal.alarm(0)
 
         if not response or len(response.strip()) < 3:
             return ""
         if re.findall(r'(.)\1{19,}', response):
             return ""
+
+        # 发言预算强制执行
+        response = enforce_budget(response, self.language.budget_tokens)
+
         self.history.append({"role": "assistant", "content": response})
         self._trim_history()
         return response
@@ -231,6 +249,10 @@ class SocialWorldApp(WorldApp):
     topic_words: dict = DEFAULT_TOPIC_WORDS
     signal_words: dict = DEFAULT_SIGNAL_WORDS
     relation_words: dict = DEFAULT_RELATION_WORDS
+
+    # 人格预设映射表：角色名 → 预设名称
+    # 例如 {"强尼·银手": "johnny_silverhand"}
+    persona_presets: dict[str, str] = {}
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -292,7 +314,7 @@ class SocialWorldApp(WorldApp):
                                     f"(强度 {res['intensity']})"
                                 )
                         except Exception:
-                            pass
+                            logger.debug("record_resonance failed for %s", cs.focus_name)
 
                     details = ", ".join(
                         f"{s.name}（来自{s.focus_name}）"
@@ -302,7 +324,7 @@ class SocialWorldApp(WorldApp):
                         f"[跨宇宙信号] 你感知到来自其他折叠面的回声：{details}"
                     )
             except Exception:
-                pass
+                logger.debug("_get_cosmic_context failed for %s", character_name)
 
         return "\n".join(ctx_parts) if ctx_parts else ""
 
@@ -332,7 +354,7 @@ class SocialWorldApp(WorldApp):
             # 为社会世界注入初始注意力
             budget.inject(self.spec.name, tick=self.runtime.tick)
         except Exception:
-            pass
+            logger.debug("注意力预算初始化失败（非必需）")
 
         print(f"\n🌍 {self.spec.name}")
         print(f"   👥 {', '.join(self.characters)}")
@@ -396,7 +418,7 @@ class SocialWorldApp(WorldApp):
                         if "[来自 " in frag.content:
                             self._cosmic_signals[frag.fragment_id] = frag.content
             except Exception:
-                pass
+                logger.debug("MetaField 脉冲失败")
 
             # 选一对
             a_name, b_name = self._pick_pair()
@@ -413,6 +435,15 @@ class SocialWorldApp(WorldApp):
             extra = self.extra_context(a.mind)
             if extra:
                 world_ctx += f"\n\n{extra}"
+
+            # 世界事件 → 人格引擎（价值观 + 情绪影响）
+            for evt in snap.events:
+                evt_type = evt.get("event_type", "")
+                evt_intensity = evt.get("intensity", 0.5)
+                evt_data = {k: v for k, v in evt.items() if k != "event_type"}
+                for r in (a, b):
+                    if r.persona:
+                        r.persona.process_event(evt_type, evt_intensity, evt_data)
 
             # A 感知 + 跨宇宙回声
             a_ctx = world_ctx
@@ -475,6 +506,8 @@ class SocialWorldApp(WorldApp):
             # 自主演化
             for res in self.residents.values():
                 res.mind.tick_autonomous(1)
+                if res.persona:
+                    res.persona.tick()
                 if rnd > 1 and rnd % 5 == 0:
                     res.mind.auto_reflect(tick=rnd)
 
@@ -487,7 +520,7 @@ class SocialWorldApp(WorldApp):
                     summary += f"{b_name}: {reply_b[:80]}"
                 self._mf_inst.anchor.store(summary.strip(), tick=rnd)
 
-            time.sleep(0.3)
+            time.sleep(15.0)
 
     def _social_tick(self, tick: int):
         """单 tick 社交世界推进。"""
