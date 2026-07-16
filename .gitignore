@@ -17,3 +17,4 @@ __pycache__/
 # ── IDE ──
 .idea/
 .vscode/
+/.kaiyu_config.json
