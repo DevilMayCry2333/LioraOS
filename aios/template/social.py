@@ -20,9 +20,11 @@ from typing import Optional
 
 from aios.runtime.model_runtime import ModelRuntime
 from aios.runtime.world_runtime import WorldRuntime
-from aios.worlds.liora.mind import LioraMind
 from aios.kernel.budget import get_attention_budget
 from aios.narrative.metafield import get_metafield
+from aios.template.cognitive import (
+    CognitiveModel, CognitiveRelationship,
+)
 
 from .base import WorldApp
 from .persona import PersonalityEngine, BUILTIN_PERSONAS
@@ -64,7 +66,7 @@ DEFAULT_RELATION_WORDS: dict[str, str] = {
 }
 
 
-def assimilate_conversation(mind: LioraMind, partner_name: str,
+def assimilate_conversation(mind: CognitiveModel, partner_name: str,
                             own_reply: str, partner_reply: str,
                             tick: int,
                             topic_words: dict[str, str] | None = None,
@@ -136,7 +138,7 @@ ANCHOR_SIGNALS: set[str] = {
 
 
 def assimilate_to_anchor(
-    mind: LioraMind,
+    mind: CognitiveModel,
     partner_name: str,
     own_reply: str,
     partner_reply: str,
@@ -234,11 +236,17 @@ def assimilate_to_anchor(
 class SocialResident:
     """社交世界的 AI 居民。"""
 
-    def __init__(self, name: str, app: WorldApp):
+    def __init__(self, name: str, app: WorldApp,
+                 mind: CognitiveModel | None = None):
         self.name = name
         self.model = app.model
         self.app = app
-        self.mind = LioraMind(name)
+        if mind is not None:
+            self.mind = mind
+        else:
+            # 默认使用 LioraMind（向后兼容）
+            from aios.worlds.liora.mind import LioraMind
+            self.mind = LioraMind(name)  # type: ignore[assignment]
         app._apply_character_config(self.mind, name)
 
         # 人格引擎（可选）

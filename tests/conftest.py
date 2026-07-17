@@ -200,36 +200,6 @@ def two_udp_networks():
 
 
 @pytest.fixture
-def gateway_with_mock_character():
-    """一个绑定了 mock 角色的 LEPGateway，自动分配端口。
-
-    Yields:
-        (gateway_instance, port)
-    """
-    from aios.runtime.gateway import LEPGateway
-
-    gw = LEPGateway(runtime=None, host="127.0.0.1", port=0)
-
-    def mock_speak(message: str, visitor: str) -> str:
-        return f"{visitor}，你说的是『{message}』吧。我听到了。"
-
-    def mock_perceive() -> str:
-        return "这是一个测试世界。阳光很好。"
-
-    gw.register_character("测试角色", mock_speak, mock_perceive)
-
-    # 直接绑定 TCP 端口（不启动完整 asyncio 循环）
-    # 测试中手动创建连接
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    gw._port = sock.getsockname()[1]
-    sock.close()
-
-    yield gw, gw.port
-
-
-@pytest.fixture
 def lep_gateway():
     """一个完整启动的 LEPGateway（在 asyncio 线程中）。
 

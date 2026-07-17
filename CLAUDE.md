@@ -175,6 +175,9 @@ uv run python3 -c "from aios.kernel import *; print('kernel ok')"
 
 ## 核心架构原则
 
+框架不可违背约束清单见 [`docs/arch_constraints.md`](docs/arch_constraints.md)。
+以下为核心原则摘要。
+
 ### Kernel 的边界
 
 Kernel **不**知道：任何变量名、事件内容、认知模型、世界专有概念。

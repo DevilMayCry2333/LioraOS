@@ -40,7 +40,7 @@ from typing import Optional
 from aios.runtime.world_runtime import WorldRuntime
 from aios.runtime.model_runtime import ModelRuntime, ModelConfig
 from aios.runtime.tools import execute_search, contains_uncertainty
-from aios.worlds.liora.mind import LioraMind
+from aios.template.cognitive import CognitiveModel
 
 logger = logging.getLogger("aios.template")
 
@@ -186,7 +186,9 @@ class WorldApp:
             char_name = ""
 
         self.character_name = char_name
-        self.mind = LioraMind(char_name)
+        # 默认使用 LioraMind（向后兼容）
+        from aios.worlds.liora.mind import LioraMind
+        self.mind: CognitiveModel = LioraMind(char_name)
         self._apply_character_config(self.mind, char_name)
 
         # 自指机制
@@ -201,18 +203,21 @@ class WorldApp:
         self._thought_this_tick = False   # 防止同个 tick 多次思考
         self._model_failed = False        # 模型彻底失败后降级模拟
 
-    def _apply_character_config(self, mind: LioraMind, name: str):
-        """将 character_config 应用到 LioraMind 实例。"""
+    def _apply_character_config(self, mind: CognitiveModel, name: str):
+        """将 character_config 应用到认知模型实例。
+
+        支持 LioraMind 的 beliefs/secrets，以及实现了类似接口的其他模型。
+        """
         if name in self.character_config:
             cfg = self.character_config[name]
-            if "beliefs" in cfg:
-                mind.beliefs = dict(cfg["beliefs"])
-            if "secrets" in cfg:
-                mind.secrets = list(cfg["secrets"])
+            if "beliefs" in cfg and hasattr(mind, "beliefs"):
+                mind.beliefs = dict(cfg["beliefs"])  # type: ignore[attr-defined]
+            if "secrets" in cfg and hasattr(mind, "secrets"):
+                mind.secrets = list(cfg["secrets"])  # type: ignore[attr-defined]
 
     # ── 可覆盖钩子 ────────────────────────────────
 
-    def describe_world(self, state: dict, mind: LioraMind | None = None) -> str:
+    def describe_world(self, state: dict, mind: CognitiveModel | None = None) -> str:
         """世界状态 → 自然语言描述。
 
         这是每个世界最独特的钩子——它的隐喻体系。
@@ -220,7 +225,7 @@ class WorldApp:
         """
         return self.runtime.format_for_perception()
 
-    def extra_context(self, mind: LioraMind) -> str:
+    def extra_context(self, mind: CognitiveModel) -> str:
         """额外的感知上下文（幽灵低语、裂隙信息等）。"""
         if self.ghost and self.ghost.is_active:
             return self.ghost.ghost_context(2)
@@ -247,7 +252,7 @@ class WorldApp:
 
     # ── Prompt 构建（模板方法） ────────────────────
 
-    def _build_social_prompt(self, mind: LioraMind) -> str:
+    def _build_social_prompt(self, mind: CognitiveModel) -> str:
         """身份连续性约束 prompt。"""
         lines = []
 
@@ -299,7 +304,7 @@ class WorldApp:
             {"role": "user", "content": "\n".join(lines)},
         ]
 
-    def _mix_identity_context(self, mind: LioraMind, lines: list[str],
+    def _mix_identity_context(self, mind: CognitiveModel, lines: list[str],
                                extra: str, search_result: str):
         """身份过滤后的感知上下文注入。"""
         if mind.experience.hum > 0.3:

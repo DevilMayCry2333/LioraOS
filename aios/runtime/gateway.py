@@ -139,17 +139,6 @@ def _load_resident(resident_id: str) -> Optional[GatewayResident]:
 
 # ── Gateway 服务端 ─────────────────────────────
 
-# ── 同步→异步桥接 ────────────────────────────
-
-
-def _sync_get_event_loop():
-    """获取当前线程的事件循环（thread-safe）。"""
-    try:
-        return asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.new_event_loop()
-
-
 class LEPGateway:
     """最简 LEP Gateway。WebSocket 端口 9100。
 

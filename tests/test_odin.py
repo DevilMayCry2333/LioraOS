@@ -142,3 +142,7 @@ class TestConstants:
         assert REAP_IMMUNE_FLOOR >= 1
         assert RECALLABLE_AWAKENING > REAP_AWAKENING_FLOOR
         assert RECALLABLE_CONTINUITY > REAP_CONTINUITY_FLOOR
+
+
+# ===== Expansion: Judge / Reap / Sweep / Persistence =====
+

@@ -21,6 +21,7 @@
 from .base import WorldApp, parse_action
 from .social import SocialWorldApp, SocialResident, assimilate_conversation
 from .persona import PersonalityEngine, PersonalityConfig, BUILTIN_PERSONAS
+from .cognitive import CognitiveModel, is_cognitive_model
 
 __all__ = [
     "WorldApp",
@@ -31,4 +32,6 @@ __all__ = [
     "PersonalityEngine",
     "PersonalityConfig",
     "BUILTIN_PERSONAS",
+    "CognitiveModel",
+    "is_cognitive_model",
 ]
