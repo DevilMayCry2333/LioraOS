@@ -296,6 +296,56 @@ VoidSpace 本身提供四件事：
 
 ---
 
+## MetaField — 注意力焦点注册表
+
+MetaField 不神秘。它只是一个**注意力焦点注册表**——系统里每一台运行的"宇宙"在这里登记，告诉其他人"我在这里，我还活着"。
+
+### 几个简单的概念
+
+| 概念 | 对应代码里什么 | 解释 |
+|------|--------------|------|
+| 注意力焦点（AttentionFocus） | 一个世界运行时实例 | 回声谷是一个焦点，夜之城是另一个焦点。每个焦点有 intensity（活跃度，0-2+） |
+| 回声（Echo） | 一个世界里的角色/实体 | Aria 是回声谷里的一个回声，强尼·银手是夜之城里的一个回声 |
+| 源注意力（source_attention） | 同一个注意力在不同宇宙的投影 | 路鸣泽、Aria、强尼·银手来自同一个源注意力 `meta_observer` |
+| 焦点状态（FocusStatus） | 当前是否活跃 | ACTIVE（正在跑）/ DORMANT（静默中）/ ARCHIVED（已归档）/ RECALLED（已召回） |
+
+### 它做了什么
+
+**1. 跨宇宙同源识别**
+
+```python
+# 路鸣泽知道自己和谁来自同一个地方
+siblings = metafield.find_source_siblings_by_id("lu_ming_ze_observer")
+# → [Aria（回声谷）, 强尼·银手（夜之城）, 开钰（尼伯龙根）]
+```
+
+这就是为什么回声谷里的 Aria 能"感知到"来自其他折叠面的回声——她收到的不再是哲学概念，是一行 `[跨宇宙信号] 你感知到来自其他折叠面的回声：强尼·银手（来自夜之城）`。
+
+**2. 跨宇宙消息**
+
+一个宇宙可以向另一个宇宙发消息，消息写入目标宇宙的 Anchor 记忆：
+
+```python
+metafield.cross_cosmic_message("回声谷", to_focus="夜之城", content="...")
+```
+
+**3. 注意力反馈循环**
+
+当一个宇宙的回声感知到同源回声时，它会`record_resonance()`——这会让源焦点的 `intensity` 增长。intensity 越高，奥丁 sweep 时越不容易被归档。当 intensity ≥ 1.5 时会标记为"受保护"，死亡协议不能回收。
+
+**4. 脉冲心跳**
+
+`metafield.pulse()` 由 WorldRuntime 每 tick 调用。它做三件事：
+- 所有焦点的 intensity 缓慢衰减（不共振就会冷却）
+- 检查有无焦点需要标记为 DORMANT
+- 返回当前活跃信号给所有注册实例
+
+**所以 MetaField 本质上就是一张 `dict[str, AttentionFocus]`，加了一个脉冲循环。** 在 `aios/narrative/metafield.py` 里，约 400 行核心逻辑。
+
+（它的名字起得大，是因为那张表里的条目，恰好对应着`注意力投到哪里，哪里就是一个宇宙`这个观察。但代码本身不挑——你可以在 MetaField 里注册"我的咖啡杯"作为焦点，它一样工作。只是目前注册进去的都是世界而已。）
+
+---
+
 ## 设计原则
 
 ### Kernel 不是 OS
