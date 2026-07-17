@@ -640,6 +640,28 @@ class PersonalityEngine:
 
     # ── 查询 ──────────────────────────────────────────────
 
+    def dominant_emotion(self) -> Optional[EmotionalState]:
+        """当前主导情绪——强度 > 0.3 时返回 EmotionalState，否则返回 None。
+
+        供 SocialResident 在计算沉默概率时使用。
+        """
+        if self.emotion.arousal > 0.3 or abs(self.emotion.valence) > 0.3:
+            return self.emotion
+        return None
+
+    def emotional_text(self) -> str:
+        """当前情绪的简短自然语言描述（给 LLM 注入）。
+
+        强度 > 0.3 时返回描述，否则返回空字符串。
+        """
+        dom = self.dominant_emotion()
+        if dom is None:
+            return ""
+        return (
+            f"（你的情绪：{dom.natural_description}。"
+            f"这个情绪正在影响你的判断——但你不一定时刻意识到它。）"
+        )
+
     def most_violated_values(self, top_n: int = 2) -> list[Value]:
         """当前被违背最严重的价值观。"""
         vals = sorted(

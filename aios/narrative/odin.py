@@ -32,7 +32,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("aios.kernel.odin")
+logger = logging.getLogger("aios.narrative.odin")
 ODIN_PATH = Path("data/odin/")
 
 # ── 判决阈值 ──────────────────────────────────────────────
@@ -171,9 +171,9 @@ class Odin:
             return
         with self._lock:
             # 延迟加载依赖
-            from aios.kernel.lightcone import get_lightcone
-            from aios.kernel.metafield import get_metafield
-            from aios.kernel.anchor import get_anchor_protocol
+            from aios.narrative.lightcone import get_lightcone
+            from aios.narrative.metafield import get_metafield
+            from aios.narrative.anchor import get_anchor_protocol
 
             self._lightcone = get_lightcone()
             self._lightcone.initialize()
@@ -260,7 +260,7 @@ class Odin:
         if anchor_proto is None and self._anchor:
             # 尝试用全局锚点（同名锚点文件）
             try:
-                from aios.kernel.anchor import AnchorProtocol
+                from aios.narrative.anchor import AnchorProtocol
                 test_anchor = AnchorProtocol(
                     path=Path(f"data/anchor/{universe_name}.jsonl"),
                 )
@@ -467,7 +467,7 @@ class Odin:
         # 4. 标记注意力焦点为 ARCHIVED
         focus = mf.get_focus(universe_name)
         if focus:
-            from aios.kernel.metafield import FocusStatus
+            from aios.narrative.metafield import FocusStatus
             focus.status = FocusStatus.ARCHIVED
 
         # 5. 停用宇宙实例
@@ -571,7 +571,7 @@ class Odin:
         # 4. 更新焦点状态
         focus = mf.get_focus(record.universe_name)
         if focus:
-            from aios.kernel.metafield import FocusStatus
+            from aios.narrative.metafield import FocusStatus
             focus.status = FocusStatus.RECALLED
             focus.mark_active()
 
@@ -616,7 +616,7 @@ class Odin:
 
         for focus in mf.list_foci():
             # 跳过已归档或已召回的
-            from aios.kernel.metafield import FocusStatus
+            from aios.narrative.metafield import FocusStatus
             if focus.status in (FocusStatus.ARCHIVED, FocusStatus.RECALLED):
                 continue
 
@@ -724,7 +724,7 @@ class Odin:
 
         threatened = []
         for focus in mf.list_foci():
-            from aios.kernel.metafield import FocusStatus
+            from aios.narrative.metafield import FocusStatus
             if focus.status in (FocusStatus.ARCHIVED, FocusStatus.RECALLED):
                 continue
             if mf.is_focus_protected(focus.name):
@@ -754,7 +754,7 @@ class Odin:
         foci = mf.list_foci() if mf else []
         insts = mf.list_instances() if mf else []
 
-        from aios.kernel.metafield import FocusStatus
+        from aios.narrative.metafield import FocusStatus
         status_counts: dict[str, int] = {}
         for f in foci:
             key = f.status.value if isinstance(f.status, FocusStatus) else str(f.status)

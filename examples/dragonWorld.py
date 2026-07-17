@@ -765,7 +765,7 @@ class DragonWorld(SocialWorldApp):
 
         # ── 锚点47（开钰协议） ──
         try:
-            from aios.kernel.anchor import get_anchor_protocol
+            from aios.narrative.anchor import get_anchor_protocol
             anchor = get_anchor_protocol()
             anchor.initialize()
             tick = self.runtime.tick if hasattr(self.runtime, 'tick') else 0

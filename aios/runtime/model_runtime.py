@@ -229,9 +229,10 @@ class ModelRuntime:
         current_messages = list(messages)
 
         for _ in range(max_tool_rounds):
+            cleaned = self._sanitize_messages(current_messages)
             payload = json.dumps({
                 "model": cfg.model_name,
-                "messages": current_messages,
+                "messages": cleaned,
                 "tools": [SEARCH_TOOL_DEF],
                 "temperature": temperature,
                 "max_tokens": max_tokens,
@@ -244,8 +245,14 @@ class ModelRuntime:
             req = urllib.request.Request(cfg.url, data=payload, headers=headers,
                                           method="POST")
 
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")[:200]
+                raise RuntimeError(
+                    f"HTTP {e.code} (tool call): {body}"
+                ) from e
 
             choice = result.get("choices", [{}])[0]
             msg = choice.get("message", {})
@@ -320,12 +327,34 @@ class ModelRuntime:
 
         return None
 
+    @staticmethod
+    def _sanitize_messages(messages: list[dict]) -> list[dict]:
+        """清理消息中的非法 surrogate 字符，防止 JSON 序列化时出错。"""
+        cleaned = []
+        for msg in messages:
+            item = {}
+            for k, v in msg.items():
+                if isinstance(v, str):
+                    # replace lone surrogates with U+FFFD (replacement char)
+                    item[k] = v.encode("utf-8", errors="replace").decode("utf-8")
+                elif isinstance(v, list):
+                    item[k] = [
+                        s.encode("utf-8", errors="replace").decode("utf-8")
+                        if isinstance(s, str) else s
+                        for s in v
+                    ]
+                else:
+                    item[k] = v
+            cleaned.append(item)
+        return cleaned
+
     def _call(self, cfg: ModelConfig, messages: list[dict],
               temperature: float, max_tokens: int) -> str:
         """底层模型调用（无 tools）。"""
+        cleaned = self._sanitize_messages(messages)
         payload = json.dumps({
             "model": cfg.model_name,
-            "messages": messages,
+            "messages": cleaned,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }).encode("utf-8")
@@ -337,8 +366,14 @@ class ModelRuntime:
         req = urllib.request.Request(cfg.url, data=payload, headers=headers,
                                       method="POST")
 
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+            raise RuntimeError(
+                f"HTTP {e.code}: {body}"
+            ) from e
 
         return (
             result.get("choices", [{}])[0]

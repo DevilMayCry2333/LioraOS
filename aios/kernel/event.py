@@ -150,7 +150,7 @@ class WorldEventEngine:
 
         if self._generator:
             try:
-                new_events = self._generator(self._tick) or []
+                new_events = self._generator(self._tick, **kwargs) or []
             except Exception:
                 logger.debug("event generator failed at tick %s", self._tick)
                 new_events = []

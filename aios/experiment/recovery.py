@@ -234,7 +234,7 @@ class IdentityRecovery:
         ))
 
         # 2) 地址映射（检查系统中是否有同名/类似名的地址）
-        from aios.kernel.voidspace import get_voidspace
+        from aios.narrative.voidspace import get_voidspace
         try:
             vs = get_voidspace()
             addr_map = vs.get_map()

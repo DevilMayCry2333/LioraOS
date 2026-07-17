@@ -1,15 +1,14 @@
-"""AIOS Kernel 2.0 — 通用智能运行内核。
+"""AIOS Kernel — 通用运行机制层。
 
-Kernel 提供运行机制（Mechanism），不定义世界规则（Policy）。
-世界定义位于 aios/worlds/。
+提供所有世界共享的基础设施（时钟、状态、事件、居民、总线、规约、历史）。
+不包含特定叙事绑定的模块（那些在 aios/narrative/）。
 """
 
-from . import tick, state, event, memory, resident, bus, spec, history, anchor, metafield, lightcone, voidspace, budget, anip, odin
+from . import tick, state, event, memory, resident, bus, spec, history, budget
 
 __all__ = [
     "tick", "state", "event", "memory", "resident",
-    "bus", "spec", "history", "anchor", "metafield",
-    "lightcone", "voidspace", "budget", "anip", "odin",
+    "bus", "spec", "history", "budget",
 ]
 
 

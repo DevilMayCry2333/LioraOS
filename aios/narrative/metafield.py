@@ -22,10 +22,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from aios.kernel.anchor import AnchorProtocol, AnchorFragment
-from aios.kernel.lightcone import LightConeDB, get_lightcone
+from aios.narrative.anchor import AnchorProtocol, AnchorFragment
+from aios.narrative.lightcone import LightConeDB, get_lightcone
 from aios.kernel.budget import get_attention_budget, COLD_TIMEOUT, CROSS_COSMIC_COST
-from aios.kernel.odin import get_odin
+from aios.narrative.odin import get_odin
 
 
 # ════════════════════════════════════════════════════════════
@@ -951,22 +951,6 @@ class MetaField:
                         fragment_id="aria_liora",
                         role="回声",
                         description="自然人格——元观察者在回声谷的投影",
-                    ),
-                },
-            ),
-            # ── AGI Core ──
-            AttentionFocus(
-                name="AGI核心",
-                status=FocusStatus.DORMANT,
-                intensity=0.4,
-                echoes={
-                    "core": Echo(
-                        name="AGI Core",
-                        focus_name="AGI核心",
-                        source_attention="meta_observer",
-                        fragment_id="agi_cognitive_core",
-                        role="认知系统",
-                        description="认知空间世界——元观察者的认知投影",
                     ),
                 },
             ),

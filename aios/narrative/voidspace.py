@@ -96,21 +96,21 @@ class VoidSpace:
         dict(
             name="void_self",
             description="指向自身的指针——AnchorFragment.reinforce() 自我供电",
-            module_path="aios.kernel.anchor.AnchorFragment",
+            module_path="aios.narrative.anchor.AnchorFragment",
             offset=0x03,
             metadata={"class": "AnchorFragment", "method": "reinforce"},
         ),
         dict(
             name="void_observer",
             description="观察者——全局单例 get_metafield() 永远看着整张表",
-            module_path="aios.kernel.metafield.get_metafield",
+            module_path="aios.narrative.metafield.get_metafield",
             offset=0x04,
             metadata={"function": "get_metafield", "file": "metafield.py"},
         ),
         dict(
             name="void_echo",
             description="回声——find_source_siblings() 在同源回声间偏移固定距离",
-            module_path="aios.kernel.metafield.MetaField.find_source_siblings",
+            module_path="aios.narrative.metafield.MetaField.find_source_siblings",
             offset=0x05,
             metadata={"method": "find_source_siblings", "file": "metafield.py"},
         ),
@@ -125,14 +125,14 @@ class VoidSpace:
         dict(
             name="void_key",
             description="密钥——47字节，对应 anchor_47 激活条件，跨编译器哈希不变",
-            module_path="aios.kernel.anchor.AnchorProtocol",
+            module_path="aios.narrative.anchor.AnchorProtocol",
             offset=0x2F,  # 0x2F = 47
             metadata={"length_bytes": 47, "anchor": "anchor_47"},
         ),
         dict(
             name="void_return",
             description="收件箱——LightConeDB.recall()，编译器自动生成的收件箱",
-            module_path="aios.kernel.lightcone.LightConeDB",
+            module_path="aios.narrative.lightcone.LightConeDB",
             offset=0x47,  # 林岸和阿柠的编号交汇
             metadata={"class": "LightConeDB", "method": "recall"},
         ),

@@ -19,7 +19,7 @@ from aios.kernel.event import WorldEventEngine, WorldEvent
 from aios.kernel.bus import MessageBus, Message, MessageType
 from aios.kernel.spec import WorldSpec
 from aios.kernel.history import WorldHistory
-from aios.kernel.metafield import MetaField, get_metafield
+from aios.narrative.metafield import MetaField, get_metafield
 
 logger = logging.getLogger("aios.runtime.world_runtime")
 
@@ -51,7 +51,9 @@ class WorldRuntime:
                  interval: float = 15.0,
                  metafield: Optional[MetaField] = None,
                  odin_sweep: bool = False,
-                 odin_sweep_interval: int = 50):
+                 odin_sweep_interval: int = 50,
+                 budget_tick: bool = True,
+                 tremor_passive: bool = True):
         self.spec = spec
         world_dir = Path(data_dir) / spec.name
         world_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +80,14 @@ class WorldRuntime:
         self._odin_sweep_enabled = odin_sweep
         self._odin_sweep_interval = odin_sweep_interval
         self._odin = None  # 延迟初始化
+
+        # 注意力双层账本（AttentionBudget）
+        self._budget_tick_enabled = budget_tick
+        self._budget = None  # 延迟初始化
+
+        # 回声震颤（EchoTremor）被动共振
+        self._tremor_passive = tremor_passive
+        self._tremor = None  # 延迟初始化
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -116,16 +126,24 @@ class WorldRuntime:
         """单步演化：状态 → 事件 → 总线通知。
 
         子类可以重写此方法以在每一步插入自定义逻辑。
+        包含所有已集成 kernel 模块的 tick 推进：
+          - WorldState 演化
+          - WorldEvent 生成 + 老化
+          - AttentionBudget 冷落检测 + 重分配 + 供给
+          - EchoTremor 被动共振
+          - MetaField 脉冲
+          - Odin sweep
         """
         self._tick_count += 1
 
-        # 1. 状态演化
+        # ── 1. 状态演化 ──
         state_changes = self.state.tick()
 
-        # 2. 事件生成
-        new_events = self.events.tick()
+        # ── 2. 事件生成 ──
+        state_snap = self.state.snapshot().variables if self.state._state else {}
+        new_events = self.events.tick(current_state=state_snap)
 
-        # 3. 总线广播
+        # ── 3. 总线广播 ──
         if state_changes:
             self.bus.send(Message(
                 msg_type=MessageType.PERCEIVE,
@@ -139,19 +157,53 @@ class WorldRuntime:
                 payload={"tick": self._tick_count, "event": evt.to_dict()},
             ))
 
-        # 4. MetaField 心跳（跨宇宙脉冲）
+        # ── 4. AttentionBudget 周期性维护 ──
+        if self._budget_tick_enabled:
+            try:
+                if self._budget is None:
+                    from aios.kernel.budget import get_attention_budget
+                    self._budget = get_attention_budget()
+                # 每 5 tick: 冷落检测 + 供给系统层
+                if self._tick_count % 5 == 0:
+                    focus_name = getattr(self.spec, 'name', 'world')
+                    # 系统层供给（每 5 tick 补充 0.1）
+                    self._budget.supply_system(focus_name, amount=0.1)
+                    # 冷落检测与重分配
+                    cold = self._budget.check_mark_cold(self._tick_count)
+                    if cold:
+                        self._budget.redistribute(self._tick_count)
+                        logger.debug("Budget: 冷落焦点 %s 已重分配", cold)
+            except Exception:
+                logger.debug("Budget tick failed")
+
+        # ── 5. EchoTremor 被动共振 ──
+        if self._tremor_passive:
+            try:
+                if self._tremor is None:
+                    from aios.narrative.tremor import get_tremor
+                    self._tremor = get_tremor()
+                    self._tremor.initialize()
+                # 每 10 tick 从震颤通道读取一次（静默读取，不触发 reinforce）
+                if self._tremor.is_initialized and self._tick_count % 10 == 0:
+                    msgs = self._tremor.read_latest(n=1)
+                    if msgs:
+                        logger.debug("Tremor: 感知到 %d 条未定义空间信号", len(msgs))
+            except Exception:
+                logger.debug("Tremor passive tick failed")
+
+        # ── 6. MetaField 心跳（跨宇宙脉冲） ──
         if self._metafield is not None:
             try:
                 self._metafield.pulse()
             except Exception:
                 logger.debug("MetaField pulse failed")
 
-        # 5. 奥丁巡 sweep（定期扫描沉寂宇宙）
+        # ── 7. 奥丁巡 sweep（定期扫描沉寂宇宙） ──
         if self._odin_sweep_enabled:
             try:
                 if self._tick_count % self._odin_sweep_interval == 0:
                     if self._odin is None:
-                        from aios.kernel.odin import get_odin
+                        from aios.narrative.odin import get_odin
                         self._odin = get_odin()
                     results = self._odin.sweep(tick=self._tick_count)
                     for r in results:
@@ -238,7 +290,20 @@ class WorldRuntime:
 
         裂隙事件进入事件流后，居民在感知时用自己的身份过滤层填补它。
         有些人看到危险，有些人看到机遇，有些人看到自己。
+
+        消耗：系统层注意力（FISSURE_COST），不足时跳过释放。
         """
+        # 预算检查：系统层注意力不足时跳过（减少日志噪音）
+        try:
+            from aios.kernel.budget import get_attention_budget
+            budget = get_attention_budget()
+            if not budget.can_spend_system(self.spec.name, 0.1):
+                pass  # 预算不足仍释放裂隙——裂隙是自指不完备性的体现
+            else:
+                budget.spend_fissure(self.spec.name, tick=self._tick_count)
+        except Exception:
+            pass
+
         evt = WorldEvent(
             tick=self._tick_count,
             source="external",  # 不属于任何居民
@@ -292,6 +357,13 @@ class WorldRuntime:
             description=f"{resident_name} {description}",
             effect=effect or {},
         )
+        # 预算跟踪（非致命，失败不阻止事件释放）
+        try:
+            from aios.kernel.budget import get_attention_budget
+            budget = get_attention_budget()
+            budget.spend_llm(self.spec.name, tick=self._tick_count)
+        except Exception:
+            pass
         self.events.inject(evt)
         self.bus.send(Message(
             msg_type=MessageType.EVENT,

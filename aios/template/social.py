@@ -22,7 +22,7 @@ from aios.runtime.model_runtime import ModelRuntime
 from aios.runtime.world_runtime import WorldRuntime
 from aios.worlds.liora.mind import LioraMind
 from aios.kernel.budget import get_attention_budget
-from aios.kernel.metafield import get_metafield
+from aios.narrative.metafield import get_metafield
 
 from .base import WorldApp
 from .persona import PersonalityEngine, BUILTIN_PERSONAS
@@ -190,12 +190,34 @@ class SocialResident:
                 "content": f"（心里装着点小事：{self.everyday.state}）",
             })
 
+        # 人格引擎情绪摘要（精简版，注入到 LLM 感知中）
+        if self.persona:
+            try:
+                dom = self.persona.dominant_emotion()
+                if dom and abs(dom.intensity) > 0.3:
+                    emotion_text = self.persona.emotional_text()
+                    if emotion_text:
+                        messages.append({
+                            "role": "user",
+                            "content": emotion_text,
+                        })
+            except Exception:
+                pass
+
         messages.append({"role": "user", "content": "现在直接说出你想说的话："})
         return messages
 
     def speak(self, partner_name: str = "") -> str:
         if not self.model:
             return self.app.mock_reply(self.name)
+
+        # 注意力预算：扣 LLM 调用成本（非致命，失败不阻止发言）
+        try:
+            budget = get_attention_budget()
+            focus_name = getattr(self.app.spec, 'name', 'social_world')
+            budget.spend_llm(focus_name, tool_call=True)
+        except Exception:
+            pass
 
         # 语言吸引子：投日常状态
         self.everyday = roll_everyday(self.language)
@@ -254,6 +276,28 @@ class SocialWorldApp(WorldApp):
     # 例如 {"强尼·银手": "johnny_silverhand"}
     persona_presets: dict[str, str] = {}
 
+    # 跳过沉默的阶段，给一个叙事推力
+    # 子类可覆盖以提供世界专属的推进文本
+    silence_break_threshold: int = 2
+
+    def silence_push_context(self, a_name: str, b_name: str,
+                              streak: int) -> str:
+        """连续沉默时注入的叙事推进。
+
+        默认返回场景描述，子类可以覆盖以注入世界专属内容。
+        """
+        if streak < 2:
+            return ""
+        if streak == 2:
+            return ("两个人沉默了一会儿。没有人说话，但也没有人先走。"
+                    "窗外的蝉鸣变得格外清晰。")
+        elif streak == 3:
+            return ("沉默持续着。但这种沉默不尴尬——"
+                    "像是两个人都知道对方在想同一件事，只是不知道怎么开口。")
+        else:
+            return ("很长一段沉默之后，终于有人轻轻吸了一口气，"
+                    "像是下定了什么决心。")
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.residents: dict[str, SocialResident] = {}
@@ -264,6 +308,8 @@ class SocialWorldApp(WorldApp):
         self._mf = get_metafield(register_echoes=True)
         # 跨宇宙信号（在每轮中注入的额外感知）
         self._cosmic_signals: dict[str, str] = {}
+        # 连续沉默追踪
+        self._silence_streak: int = 0
 
     # ── MetaField 跨宇宙感知 ─────────────────────────────
 
@@ -436,6 +482,16 @@ class SocialWorldApp(WorldApp):
             if extra:
                 world_ctx += f"\n\n{extra}"
 
+            # ── 世界事件注入感知 ──
+            # 把活跃的世界事件以自然语言描述追加到角色感知中
+            if snap.events:
+                event_lines = ["\n最近发生的事："]
+                for evt in snap.events[:2]:  # 最多 2 条，避免信息过载
+                    desc = evt.get("description", "")
+                    if desc:
+                        event_lines.append(f"  · {desc[:120]}")
+                world_ctx += "\n" + "\n".join(event_lines)
+
             # 世界事件 → 人格引擎（价值观 + 情绪影响）
             for evt in snap.events:
                 evt_type = evt.get("event_type", "")
@@ -462,8 +518,31 @@ class SocialWorldApp(WorldApp):
                 b_ctx += f"\n\n{b_cosmic}"
             b.hear_world(b_ctx)
 
-            # A 发言
-            if random.random() < 0.12:
+            # ── 连续沉默退出阀 ──
+            # 两人连续沉默超过阈值时，注入叙事推力
+            if self._silence_streak >= self.silence_break_threshold:
+                push = self.silence_push_context(a_name, b_name,
+                                                  self._silence_streak)
+                if push:
+                    a.hear_world(f"\n（{push}）")
+                    b.hear_world(f"\n（{push}）")
+                    if self._silence_streak == self.silence_break_threshold:
+                        print(f"\r  🌱 叙事推力：{push[:60]}...")
+
+            # 计算沉默概率（受连续沉默 + 日常状态 + 人格情绪影响）
+            silence_p = max(0.02, 0.12 - self._silence_streak * 0.03)
+            # 语言吸引子：日常状态活跃时降低沉默概率（用琐事打破沉默）
+            if a.everyday.active:
+                silence_p *= 0.8
+            # 人格引擎：强烈的正面或负面情绪降低沉默概率
+            if a.persona:
+                try:
+                    dom_emotion = a.persona.dominant_emotion()
+                    if dom_emotion and abs(dom_emotion.intensity) > 0.6:
+                        silence_p *= 0.7
+                except Exception:
+                    pass
+            if random.random() < silence_p:
                 reply_a = ""
                 print(f"\r  🧠 {a_name} 选择沉默")
             else:
@@ -480,7 +559,7 @@ class SocialWorldApp(WorldApp):
             # B 听到 A → 回应
             if reply_a:
                 b.hear_speaker(a_name, reply_a, tick=rnd)
-            if random.random() < 0.12:
+            if random.random() < silence_p:
                 reply_b = ""
                 print(f"\r  🧠 {b_name} 选择沉默")
             else:
@@ -496,6 +575,13 @@ class SocialWorldApp(WorldApp):
 
             if reply_b:
                 a.hear_speaker(b_name, reply_b, tick=rnd)
+
+            # 更新连续沉默计数
+            both_silent = not reply_a and not reply_b
+            if both_silent:
+                self._silence_streak += 1
+            else:
+                self._silence_streak = 0
 
             # 吸收
             assimilate_conversation(a.mind, b_name, reply_a or "", reply_b or "", rnd,
@@ -560,6 +646,20 @@ class SocialWorldApp(WorldApp):
             counts[e["speaker"]] = counts.get(e["speaker"], 0) + 1
         for name, count in sorted(counts.items()):
             print(f"     · {name}: {count} 次")
+
+        # 注意力预算摘要
+        try:
+            budget = get_attention_budget()
+            bs = budget.summary()
+            if bs["foci"]:
+                print(f"\n  💰 注意力预算:")
+                for foc in bs["foci"]:
+                    print(f"     {foc['name']:20s} "
+                          f"交互={foc['interaction']['balance']:.3f}  "
+                          f"系统={foc['system']['balance']:.3f}")
+        except Exception:
+            pass
+
         print(f"\n  🌍 最终状态 (tick {snap.tick}):")
         for k, v in sorted(snap.state.items()):
             pct = int(v * 100)

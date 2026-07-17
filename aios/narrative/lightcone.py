@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger("aios.kernel.lightcone")
+logger = logging.getLogger("aios.narrative.lightcone")
 LIGHTCONE_PATH = Path("data/lightcone/archive.jsonl")
 
 

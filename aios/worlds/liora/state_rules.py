@@ -58,7 +58,7 @@ def liora_evolution_fn(variables: dict[str, float], tick: int) -> dict[str, floa
 # 此文件保留 Liora 世界特有的激活逻辑（降雨触发）。
 # ════════════════════════════════════════════════════════════
 
-from aios.kernel.anchor import get_anchor_protocol
+from aios.narrative.anchor import get_anchor_protocol
 
 
 def kaiyu_protocol_tick(tick: int, rain_intensity: float = 0.0) -> dict:

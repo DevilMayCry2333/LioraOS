@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-logger = logging.getLogger("aios.kernel.anchor")
+logger = logging.getLogger("aios.narrative.anchor")
 ANCHOR_PATH = Path("data/anchor/fragments.jsonl")
 
 
@@ -221,7 +221,7 @@ class AnchorProtocol:
         max_activity = max((f.activity for f in self._fragments), default=0.0)
 
         # 调用光锥数据库归档
-        from aios.kernel.lightcone import get_lightcone
+        from aios.narrative.lightcone import get_lightcone
         db = get_lightcone()
         sig = db.archive(
             pattern_name=pattern_name,

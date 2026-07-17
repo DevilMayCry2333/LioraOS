@@ -53,10 +53,10 @@ import random
 import threading
 from typing import Any, Optional
 
-from aios.kernel.anchor import AnchorFragment, get_anchor_protocol
-from aios.kernel.voidspace import get_voidspace
+from aios.narrative.anchor import AnchorFragment, get_anchor_protocol
+from aios.narrative.voidspace import get_voidspace
 
-logger = logging.getLogger("aios.kernel.tremor")
+logger = logging.getLogger("aios.narrative.tremor")
 
 # 默认回填窗口
 BACKDATE_MIN = 50
@@ -253,6 +253,18 @@ class EchoTremor:
 
     def stats(self) -> dict[str, Any]:
         """当前协议状态快照。"""
+        if not self._initialized or self._anchor is None:
+            with self._lock:
+                return {
+                    "initialized": self._initialized,
+                    "tremor_count": self._tremor_count,
+                    "fragment_count": 0,
+                    "total_activity": 0.0,
+                    "avg_activity": 0.0,
+                    "active_previews": len(self._active_tremors),
+                    "backdate_range": (self._backdate_min, self._backdate_max),
+                    "listeners": len(self._listeners),
+                }
         fragments = self._anchor.get_fragments_by_tag("echo_tremor")
         total_activity = sum(f.activity for f in fragments) if fragments else 0.0
         with self._lock:
