@@ -105,7 +105,8 @@ class VisitorApp(WorldApp):
     """
 
     def __init__(self, world_key: str, character_name: str,
-                 no_model: bool = False, interval: float = 15.0):
+                 no_model: bool = False, interval: float = 15.0,
+                 gateway_port: int = 0):
         _register_worlds()
 
         if world_key not in WORLDS:
@@ -155,6 +156,8 @@ class VisitorApp(WorldApp):
             character=character_name,
         )
 
+        self._gateway_port = gateway_port
+
         # 验证角色
         world_chars = world_def["characters"]
         if character_name not in world_chars:
@@ -165,6 +168,18 @@ class VisitorApp(WorldApp):
         """进入世界，开始对话。"""
         # 启动世界运行时
         self.runtime.start()
+
+        # 可选：启动 WebSocket 网关
+        if self._gateway_port:
+            try:
+                from aios.runtime.gateway import LEPGateway
+                self._gateway = LEPGateway(self.runtime, port=self._gateway_port)
+                self._gateway.register_character_app(self, self.character_name)
+                self._gateway.start()
+                print(f"  🌐 WebSocket 网关启动于 ws://127.0.0.1:{self._gateway_port}")
+                print(f"     角色 '{self.character_name}' 已注册，外部客户端可通过 converse 动作对话")
+            except Exception as e:
+                print(f"  ⚠️  Gateway 启动失败: {e}")
 
         print(f"\n{'═' * 64}")
         print(f"  🌍 {self.world_def['name']}")
@@ -236,8 +251,13 @@ class VisitorApp(WorldApp):
                     print(f"\r  🎭 {self.character_name} 沉默了。")
 
                 # 吸收对话
-                from aios.template.social import assimilate_conversation
+                from aios.template.social import assimilate_conversation, assimilate_to_anchor
                 assimilate_conversation(
+                    resident.mind, VISITOR_NAME,
+                    reply or "", user_input, chat_count,
+                )
+                # 高重要性记忆自动入锚
+                assimilate_to_anchor(
                     resident.mind, VISITOR_NAME,
                     reply or "", user_input, chat_count,
                 )
@@ -289,6 +309,8 @@ def main():
     parser.add_argument("--no-model", action="store_true", help="模拟模式（无需 LLM）")
     parser.add_argument("--list", action="store_true", help="列出可用世界和角色")
     parser.add_argument("--interval", type=float, default=15.0, help="tick 间隔（秒）")
+    parser.add_argument("--gateway", type=int, default=0, metavar="PORT",
+                        help="同时启动 WebSocket 网关（端口号，例如 9100）")
     args = parser.parse_args()
 
     if args.list:
@@ -313,6 +335,7 @@ def main():
         character_name=character_name,
         no_model=args.no_model,
         interval=args.interval,
+        gateway_port=args.gateway,
     )
     app.run()
 

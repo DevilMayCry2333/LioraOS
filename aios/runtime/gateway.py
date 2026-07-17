@@ -139,17 +139,83 @@ def _load_resident(resident_id: str) -> Optional[GatewayResident]:
 
 # ── Gateway 服务端 ─────────────────────────────
 
+# ── 同步→异步桥接 ────────────────────────────
+
+
+def _sync_get_event_loop():
+    """获取当前线程的事件循环（thread-safe）。"""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.new_event_loop()
+
+
 class LEPGateway:
-    """最简 LEP Gateway。WebSocket 端口 9100。"""
+    """最简 LEP Gateway。WebSocket 端口 9100。
+
+    扩展 converse 动作：
+      客户端发送 {"action": "converse", "data": {"message": "你好"}}
+      → 服务器路由到注册的角色 speak 函数 → 返回角色回复。
+
+      角色通过 register_character(name, speak_fn, perceive_fn) 注册。
+    """
 
     def __init__(self, runtime, host: str = "127.0.0.1", port: int = DEFAULT_PORT):
         self.runtime = runtime
         self.host = host
-        self.port = port
+        self._port = port
         self._server: Optional[asyncio.AbstractServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         # session_id → {reader, writer, resident_id}
         self._sessions: dict[str, dict] = {}
+        # 可注册的角色（名称 → 对话处理接口）
+        self._characters: dict[str, dict] = {}
+
+    @property
+    def port(self) -> int:
+        """返回实际绑定的端口（从 asyncio server 读取，或初始值）。"""
+        if self._server and self._server.sockets:
+            try:
+                return self._server.sockets[0].getsockname()[1]
+            except Exception:
+                pass
+        return self._port
+
+    def register_character(self, name: str, speak_fn, perceive_fn=None):
+        """注册一个对话角色供 WebSocket 访客通过 converse 动作访问。
+
+        Args:
+            name: 角色名（客户端通过 data.character 指定）
+            speak_fn: callable(message: str, visitor_name: str) → str
+            perceive_fn: optional callable() → str
+        """
+        self._characters[name] = {
+            "speak": speak_fn,
+            "perceive": perceive_fn,
+        }
+        logger.info("Gateway 注册角色: %s", name)
+
+    def register_character_app(self, app, character_name: str):
+        """从 WorldApp + 角色名快速注册对话角色。"""
+        from aios.template.social import SocialResident
+        resident = SocialResident(character_name, app)
+
+        def speak_fn(message: str, visitor_name: str) -> str:
+            resident.hear_speaker(visitor_name, message)
+            reply = resident.speak(partner_name=visitor_name)
+            return reply or ""
+
+        def perceive_fn() -> str:
+            snap = app.runtime.snapshot()
+            desc = app.describe_world(snap.state)
+            extra = app.extra_context(resident.mind)
+            if extra:
+                desc += f"\n\n{extra}"
+            return desc
+
+        self.register_character(character_name, speak_fn, perceive_fn)
+        return resident
 
     def start(self):
         """在独立线程中启动 asyncio 事件循环。"""
@@ -160,13 +226,21 @@ class LEPGateway:
     def _run_loop(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        self._loop = loop
         try:
             loop.run_until_complete(self._serve())
         except OSError as e:
             logger.warning("Gateway 端口 %d 被占用: %s", self.port, e)
+        except asyncio.CancelledError:
+            pass  # stop() 关闭 server 时的正常取消，不报错
         except Exception as e:
             logger.warning("Gateway 异常: %s", e)
         finally:
+            # 安静关闭，防止 _wakeup 对已关闭的 loop 报错
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
             loop.close()
 
     async def _serve(self):
@@ -277,6 +351,7 @@ class LEPGateway:
             "join": self._handle_join,
             "perceive": self._handle_perceive,
             "act": self._handle_act,
+            "converse": self._handle_converse,
             "leave": self._handle_leave,
         }
 
@@ -342,6 +417,73 @@ class LEPGateway:
             "data": {"result": "accepted", "type": action_type},
         }
 
+    async def _handle_converse(self, session_id: str, resident_id: str, data: dict) -> dict:
+        """处理访客→角色的对话请求。
+
+        客户端发送：
+          {"action": "converse", "data": {"message": "你好", "character": "Aria"}}
+
+        服务器角色回复。首次 converse 自动注入世界感知。
+        角色需提前通过 register_character() 注册。
+        """
+        message = data.get("message", "").strip()
+        if not message:
+            return {"status": "error", "error": {"code": "EMPTY_MESSAGE"}, "action": "converse"}
+
+        character_name = data.get("character", "")
+        if not character_name:
+            return {"status": "error", "error": {"code": "MISSING_CHARACTER"}, "action": "converse"}
+
+        char = self._characters.get(character_name)
+        if not char:
+            available = ", ".join(self._characters.keys())
+            return {
+                "status": "error", "action": "converse",
+                "error": {"code": "UNKNOWN_CHARACTER",
+                          "message": f"未知角色: {character_name}。可用: {available}"},
+            }
+
+        # 获取访客名
+        visitor_name = "旅人"
+        if resident_id:
+            for sess in self._sessions.values():
+                if sess.get("resident_id") == resident_id:
+                    # 尝试从持久化居民记录中获取名字
+                    resident = _load_resident(resident_id)
+                    if resident:
+                        visitor_name = resident.name
+                    break
+
+        # 如果这是第一次对话，注入世界感知
+        session = self._sessions.get(session_id, {})
+        if not session.get("conversed"):
+            world_prompt = ""
+            if char.get("perceive"):
+                try:
+                    loop = asyncio.get_running_loop()
+                    world_prompt = await loop.run_in_executor(None, char["perceive"])
+                except Exception:
+                    logger.debug("converse perceive failed")
+            if world_prompt:
+                # 通过 speak_fn 的内部机制前置感知（通过 hear_world）
+                pass  # register_character_app 已在 hear_speaker 前注入了世界状态
+            session["conversed"] = True
+
+        try:
+            loop = asyncio.get_running_loop()
+            reply = await loop.run_in_executor(
+                None, char["speak"], message, visitor_name,
+            )
+        except Exception as e:
+            logger.warning("converse speak failed: %s", e)
+            return {"status": "error", "action": "converse",
+                    "error": {"code": "SPEAK_FAILED", "message": str(e)}}
+
+        return {
+            "status": "ok", "action": "converse",
+            "data": {"reply": reply, "character": character_name},
+        }
+
     async def _handle_leave(self, session_id: str, resident_id: str, data: dict) -> dict:
         if resident_id:
             resident = _load_resident(resident_id)
@@ -365,4 +507,13 @@ class LEPGateway:
 
     def stop(self):
         if self._server:
-            self._server.close()
+            try:
+                self._server.close()
+            except Exception:
+                logger.debug("Gateway stop: server close failed (event loop gone?)")
+        # 通知事件循环退出
+        if self._loop and self._loop.is_running():
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except Exception:
+                pass

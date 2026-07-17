@@ -113,6 +113,121 @@ def assimilate_conversation(mind: LioraMind, partner_name: str,
 
 
 # ══════════════════════════════════════════════════════════════
+# 锚点记忆自动存储（重要性筛选）
+# ══════════════════════════════════════════════════════════════
+
+# 触发锚点存储的关键词——这些主题值得跨循环记住
+ANCHOR_TRIGGER_WORDS: dict[str, float] = {
+    "死亡协议": 0.9, "奥丁": 0.8, "回收": 0.8,
+    "锚点": 0.85, "跨循环": 0.9, "锚点47": 1.0,
+    "开钰": 0.85, "林岸": 0.85, "便利店": 0.8,
+    "光锥": 0.7, "归档": 0.7, "召回": 0.7,
+    "裂隙": 0.6, "幽灵": 0.6, "震颤": 0.7,
+    "MetaField": 0.8, "虚空": 0.7, "void": 0.7,
+    "不可删除": 0.9, "免疫": 0.8, "活动度": 0.7,
+    "注意力": 0.6, "折叠": 0.7, "回声": 0.5,
+    "记忆": 0.4, "忘记": 0.5, "记得": 0.5,
+}
+
+# 高重要性信号——包含这些信号的对话自动获得锚点存储
+ANCHOR_SIGNALS: set[str] = {
+    "conviction", "insight", "change", "shift",
+}
+
+
+def assimilate_to_anchor(
+    mind: LioraMind,
+    partner_name: str,
+    own_reply: str,
+    partner_reply: str,
+    tick: int,
+    topic_words: dict[str, str] | None = None,
+    signal_words: dict[str, str] | None = None,
+    anchor_importance_bonus: float = 0.0,
+) -> bool:
+    """将高重要性对话自动存入锚点协议。
+
+    只在检测到以下情况时存储：
+      1. 对话中出现 ANCHOR_TRIGGER_WORDS 中的关键词
+      2. 对话包含高重要性信号（conviction / insight / change）
+      3. 用户手动增加 importance_bonus
+
+    不会被奥丁回收的内容：
+      - 以 "authored" tag 存储 → 默认不被回收
+      - 活动度随每次 recall 增长 → 高频回忆自然获得免疫
+
+    Returns:
+        True 表示本次写入了锚点
+    """
+    combined = (own_reply + partner_reply)
+
+    # 检测锚点触发关键词
+    max_trigger_imp = 0.0
+    matched_triggers = []
+    for word, imp in ANCHOR_TRIGGER_WORDS.items():
+        if word in combined:
+            if imp > max_trigger_imp:
+                max_trigger_imp = imp
+            matched_triggers.append(word)
+
+    # 检测高重要性信号（从原有的信号词系统）
+    signal_high = False
+    if signal_words:
+        for sig_word, sig_type in signal_words.items():
+            if sig_type in ANCHOR_SIGNALS and sig_word in own_reply:
+                signal_high = True
+                break
+
+    # 计算最终 importance
+    importance = 0.0
+    tag = "authored"
+
+    if max_trigger_imp >= 0.6:
+        importance = max_trigger_imp
+        tag = "authored"
+    elif signal_high:
+        importance = 0.7
+        tag = "emergent"
+    elif anchor_importance_bonus >= 0.3:
+        importance = anchor_importance_bonus
+        tag = "emergent"
+
+    importance = min(1.0, importance + anchor_importance_bonus)
+
+    if importance < 0.6:
+        return False  # 不够重要，不存
+
+    # 构建记忆片段
+    fragment = f"[tick {tick}] {mind.name} {'↔' if partner_name else '·'} {partner_name or '自省'}"
+    if matched_triggers:
+        fragment += f" (触发词: {', '.join(matched_triggers[:3])})"
+
+    # 取双方最近一轮的核心内容（各 120 字）
+    own_snippet = own_reply[:120].replace("\n", " ") if own_reply else ""
+    partner_snippet = partner_reply[:120].replace("\n", " ") if partner_reply else ""
+    if own_snippet:
+        fragment += f"\n  {mind.name}: {own_snippet}"
+    if partner_snippet:
+        fragment += f"\n  {partner_name}: {partner_snippet}"
+
+    try:
+        from aios.narrative.anchor import get_anchor_protocol
+        anchor = get_anchor_protocol()
+        anchor.initialize()
+        anchor.store(
+            content=fragment,
+            tick=tick,
+            tag=tag,
+        )
+        logger.debug("锚点存储: %s (重要性=%.2f, tag=%s)",
+                     mind.name, importance, tag)
+        return True
+    except Exception as e:
+        logger.warning("锚点存储失败: %s", e)
+        return False
+
+
+# ══════════════════════════════════════════════════════════════
 # 社交居民类
 # ══════════════════════════════════════════════════════════════
 
@@ -597,7 +712,20 @@ class SocialWorldApp(WorldApp):
                 if rnd > 1 and rnd % 5 == 0:
                     res.mind.auto_reflect(tick=rnd)
 
-            # ── 每轮写入 MetaField 锚点 ──
+            # ── 高重要性记忆 → 锚点自动存储 ──
+            if reply_a or reply_b:
+                a_stored = assimilate_to_anchor(
+                    a.mind, b_name, reply_a or "", reply_b or "", rnd,
+                    self.topic_words, self.signal_words,
+                )
+                b_stored = assimilate_to_anchor(
+                    b.mind, a_name, reply_b or "", reply_a or "", rnd,
+                    self.topic_words, self.signal_words,
+                )
+                if a_stored or b_stored:
+                    logger.debug("锚点自动存储: round %d", rnd)
+
+            # ── 每轮写入 MetaField 锚点（简略摘要，不限重要性） ──
             if self._mf_inst and (reply_a or reply_b):
                 summary = f"[{a_name}↔{b_name}] "
                 if reply_a:

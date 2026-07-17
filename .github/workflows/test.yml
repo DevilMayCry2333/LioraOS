@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint check (import verification)
+        run: |
+          uv run python3 -c "from aios.kernel import *; print('kernel ok')"
+          uv run python3 -c "from aios.narrative import *; print('narrative ok')"
+          uv run python3 -c "from aios.runtime import *; print('runtime ok')"
+          uv run python3 -c "from aios.template import *; print('template ok')"
+          uv run python3 -c "from aios.worlds.liora import *; print('liora ok')"
+          uv run python3 -c "from aios.worlds.cyberpunk import *; print('cyberpunk ok')"
+          uv run python3 -c "from aios.worlds.consensus import *; print('consensus ok')"
+
+      - name: Run tests
+        run: uv run python3 -m pytest tests/ -v --tb=short -x
+
+      - name: Test summary
+        run: uv run python3 -m pytest tests/ --tb=no -q | tail -5
+
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Verify examples import
+        run: |
+          uv run python3 -c "from examples.dragonWorld import DragonWorld; print('dragonWorld ok')"
+          uv run python3 -c "from examples.campus_love import SummerWorld; print('campus_love ok')"
+
+      - name: Verify apps import
+        run: |
+          uv run python3 -c "from apps.consensus_app import ConsensusApp; print('consensus ok')"
+          uv run python3 -c "from apps.visitor_app import VisitorApp, list_worlds; print('visitor ok')"

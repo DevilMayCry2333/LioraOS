@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import random
 import secrets
@@ -43,6 +44,11 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Optional
+
+# UDP 传输层（仅在 mode="udp" 时导入）
+_udp_transport_module = None  # 延迟导入
+
+logger = logging.getLogger("aios.narrative.anip")
 
 
 # ════════════════════════════════════════════════════════════
@@ -255,17 +261,61 @@ class ANIPNetwork:
     # 已知的初始联系点（用于节点发现）
     BOOTSTRAP_NODES = ["kaiyu", "johnny", "linan"]
 
-    def __init__(self):
+    def __init__(self, mode: str = "memory", host: str = "0.0.0.0", port: int = 0):
         self._lock = threading.Lock()
         self._nodes: dict[str, ANIPNode] = {}
         self._relay_pool: list[str] = []            # 所有可用中继节点 ID
         self._session_active: bool = False
         self._created_at: float = time.time()
 
+        # UDP 传输模式
+        self._mode = mode
+        self._transport = None
+        self._discovery = None
+        self._udp_host = host
+        self._udp_port = port
+
         # 统计
         self._messages_sent: int = 0
         self._messages_relayed: int = 0
         self._relay_rotations: int = 0
+
+    # ── UDP 传输初始化 ──
+
+    def _init_udp(self):
+        """初始化 UDP 传输层和节点发现。"""
+        global _udp_transport_module
+        if _udp_transport_module is None:
+            from aios.narrative import anip_udp as _udp_transport_module
+
+        self._transport = _udp_transport_module.UDPTransport(
+            host=self._udp_host, port=self._udp_port,
+        )
+        self._transport.bind()
+        self._transport.on_message = self._on_udp_relay_message
+        self._udp_port = self._transport.port
+        logger.info("ANIP UDP 模式启动: %s:%d", self._udp_host, self._udp_port)
+
+    def _on_udp_relay_message(self, relay_dict: dict, sender_addr: tuple):
+        """UDP 收到中继消息 → 路由到本地接收节点。"""
+        receiver_fp = relay_dict.get("receiver_fingerprint", "")
+        if not receiver_fp:
+            return
+        with self._lock:
+            # 找本地 fingerprint 匹配的节点
+            for node in self._nodes.values():
+                if node.tif.public_key[:16] == receiver_fp:
+                    from .anip import RelayMessage
+                    msg = RelayMessage(
+                        hops=relay_dict.get("hops", []),
+                        encrypted_payload=relay_dict.get("encrypted_payload", ""),
+                        sender_fingerprint=relay_dict.get("sender_fingerprint", ""),
+                        receiver_fingerprint=receiver_fp,
+                        salt=relay_dict.get("salt", ""),
+                        timestamp=relay_dict.get("timestamp", time.time()),
+                    )
+                    node.pending_messages.append(msg)
+                    break
 
     # ── 节点管理 ──
 
@@ -282,6 +332,10 @@ class ANIPNetwork:
         """
         tif = TIF.generate(node_id)
         node = ANIPNode(node_id=node_id, tif=tif)
+
+        # UDP 模式：首次 join 时初始化传输层
+        if self._mode == "udp" and self._transport is None:
+            self._init_udp()
 
         with self._lock:
             self._nodes[node_id] = node
@@ -350,6 +404,9 @@ class ANIPNetwork:
              payload: str) -> Optional[str]:
         """发送一条匿名消息。
 
+        memory 模式：进程内传递（当前行为）。
+        udp 模式：通过 UDP socket 发送到远程节点。
+
         Args:
             sender_id: 发送方节点 ID
             receiver_id: 接收方节点 ID
@@ -358,6 +415,13 @@ class ANIPNetwork:
         Returns:
             消息 ID（仅用于调试），发送失败返回 None
         """
+        if self._mode == "udp":
+            return self._send_udp(sender_id, receiver_id, payload)
+        return self._send_memory(sender_id, receiver_id, payload)
+
+    def _send_memory(self, sender_id: str, receiver_id: str,
+                     payload: str) -> Optional[str]:
+        """内存模式的消息发送（当前行为）。"""
         with self._lock:
             sender = self._nodes.get(sender_id)
             receiver = self._nodes.get(receiver_id)
@@ -407,10 +471,100 @@ class ANIPNetwork:
             ).hexdigest()[:12]
             return msg_id
 
+    def _send_udp(self, sender_id: str, receiver_id: str,
+                  payload: str) -> Optional[str]:
+        """UDP 模式的消息发送——通过 socket 发到远程节点。"""
+        if not self._transport:
+            return None
+
+        with self._lock:
+            sender = self._nodes.get(sender_id)
+            if not sender:
+                return None
+
+            # 加密载荷
+            salt = secrets.token_hex(8)
+            encrypted = encrypt_payload(payload, receiver_id, salt=salt)
+
+            # 查找接收方地址
+            receiver_fp = ""
+            receiver_addr = None
+            if self._discovery:
+                peer = self._discovery.get_peer_by_name(receiver_id)
+                if peer:
+                    receiver_addr = (peer[0], peer[1])
+                    receiver_fp = peer[2]
+
+            if not receiver_addr:
+                logger.debug("UDP send: 找不到接收方 %s", receiver_id)
+                return None
+
+            # 构建消息（无中继链，直发）
+            relay_dict = {
+                "hops": [],
+                "encrypted_payload": encrypted,
+                "sender_fingerprint": sender.tif.public_key[:16],
+                "receiver_fingerprint": receiver_fp,
+                "salt": salt,
+                "timestamp": time.time(),
+            }
+
+            my_addr = (self._udp_host, self._udp_port)
+            sent = self._transport.send_relay(
+                relay_dict, receiver_addr, current_hop=0, my_addr=my_addr,
+            )
+            if sent:
+                self._messages_sent += 1
+
+            msg_id = hashlib.sha256(
+                f"{payload}:{salt}:{time.time()}".encode()
+            ).hexdigest()[:12]
+            return msg_id if sent else None
+
+    def add_peer(self, node_id: str, addr: tuple[str, int],
+                 fingerprint: str = ""):
+        """手动注册一个远程对等节点（UDP 模式）。
+
+        节点发现（NodeDiscovery）会自动学习地址。此方法用于
+        静态配置或测试环境中的手动注册。
+
+        Args:
+            node_id: 远程节点名称
+            addr: (ip, port)
+            fingerprint: 远程节点的 TIF 公钥前缀（可选，为空时用 node_id 替代）
+        """
+        if self._mode != "udp":
+            logger.warning("add_peer 仅用于 UDP 模式")
+            return
+        self._ensure_discovery()
+        fp = fingerprint or node_id
+        self._discovery.add_peer(node_id, fp, addr)
+
+    def _ensure_discovery(self):
+        """确保 NodeDiscovery 已初始化。"""
+        if self._discovery is not None:
+            return
+        if self._transport is not None:
+            from aios.narrative import anip_udp as _udp_transport_module
+            # 取第一个本地节点的 fingerprint 作为发现身份
+            local_fp = ""
+            with self._lock:
+                for node in self._nodes.values():
+                    local_fp = node.tif.public_key[:16]
+                    break
+            if not local_fp:
+                return
+            self._discovery = _udp_transport_module.NodeDiscovery(
+                self._transport, local_fp,
+            )
+
     # ── 消息接收 ──
 
     def receive(self, node_id: str) -> list[dict]:
         """接收发送给指定节点的所有消息并解密。
+
+        memory 模式：从本地节点的 pending_messages 读取。
+        udp 模式：除了本地消息，还检查 UDP 传输层收到的远程消息。
 
         Args:
             node_id: 接收方节点 ID
@@ -424,6 +578,44 @@ class ANIPNetwork:
                 return []
 
             results = []
+
+            # UDP 模式：检查传输层 inbox 中的远程消息
+            if self._mode == "udp" and self._transport:
+                try:
+                    from aios.narrative import anip_udp as _ut
+                except ImportError:
+                    _ut = None
+                if _ut:
+                    incoming = self._transport.get_incoming()
+                    for msg_type, payload, sender_addr in incoming:
+                        if msg_type == "relay":
+                            # 解密远程消息
+                            try:
+                                encrypted = payload.get("encrypted_payload", "")
+                                if encrypted:
+                                    decrypted_content = decrypt_payload(encrypted, node_id)
+                                    results.append({
+                                        "sender": payload.get("sender_fingerprint", "remote")[:12],
+                                        "content": decrypted_content,
+                                        "timestamp": payload.get("timestamp", time.time()),
+                                    })
+                                    node.received_messages.append(decrypted_content[:80])
+                            except Exception:
+                                results.append({
+                                    "sender": "remote",
+                                    "content": "[解密失败]",
+                                    "timestamp": time.time(),
+                                })
+                        elif msg_type == "presence_reply":
+                            # 发现信息更新
+                            if self._discovery:
+                                try:
+                                    pd = json.loads(payload["payload"].decode("utf-8"))
+                                    self._discovery.handle_presence_reply(pd, sender_addr)
+                                except Exception:
+                                    pass
+
+            # 内存模式：从 pending_messages 读取
             for msg in node.pending_messages:
                 try:
                     decrypted = decrypt_payload(
@@ -498,6 +690,12 @@ class ANIPNetwork:
             self._relay_pool.clear()
             self._session_active = False
 
+        # UDP 模式：关闭传输层
+        if self._transport:
+            self._transport.close()
+            self._transport = None
+        self._discovery = None
+
     def summary(self) -> dict:
         with self._lock:
             nodes_info = {}
@@ -526,11 +724,20 @@ class ANIPNetwork:
 _global_anip: Optional[ANIPNetwork] = None
 
 
-def get_anip() -> ANIPNetwork:
-    """获取 ANIP 网络全局单例。"""
+def get_anip(mode: str = "memory", host: str = "0.0.0.0", port: int = 0) -> ANIPNetwork:
+    """获取 ANIP 网络全局单例。
+
+    Args:
+        mode: "memory"（进程内模拟）或 "udp"（真实 UDP 网络）
+        host: UDP 模式绑定的主机地址
+        port: UDP 模式绑定的端口（0 = 自动分配）
+
+    Returns:
+        ANIPNetwork 单例
+    """
     global _global_anip
     if _global_anip is None:
-        _global_anip = ANIPNetwork()
+        _global_anip = ANIPNetwork(mode=mode, host=host, port=port)
     return _global_anip
 
 

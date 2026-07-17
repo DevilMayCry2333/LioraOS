@@ -7,7 +7,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "pytest-timeout>=2.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 15
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "slow: 需要实时等待的网络或睡眠测试",
+    "udp: 需要 UDP socket 的测试",
+    "gateway: 需要 WebSocket Gateway 的测试",
+    "anchor: 需要锚点协议的测试",
+]
