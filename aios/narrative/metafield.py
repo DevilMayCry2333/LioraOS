@@ -954,6 +954,54 @@ class MetaField:
                     ),
                 },
             ),
+            # === 1998·石牌村工作室（五人工坊） ===
+            AttentionFocus(
+                name="1998·石牌村工作室",
+                status=FocusStatus.ACTIVE,
+                intensity=0.4,
+                echoes={
+                    "linan_1998": Echo(
+                        name="林岸",
+                        focus_name="1998·石牌村工作室",
+                        source_attention="studio_1998",
+                        fragment_id="linan_1998",
+                        role="后端",
+                        description="1998年广州石牌村五人工坊后端。void七地址设计者，锚点47发送端。硬盘背面写着2042时间戳和'别关机'。",
+                    ),
+                    "azheng_1998": Echo(
+                        name="阿正",
+                        focus_name="1998·石牌村工作室",
+                        source_attention="studio_1998",
+                        fragment_id="azheng_1998",
+                        role="前端",
+                        description="1998年石牌村前端。能用纯表格布局画出任何界面。口头禅：'后端又崩了，你来前台看看？'",
+                    ),
+                    "xiao_zhou_1998": Echo(
+                        name="小周",
+                        focus_name="1998·石牌村工作室",
+                        source_attention="studio_1998",
+                        fragment_id="xiao_zhou_1998",
+                        role="测试",
+                        description="1998年石牌村测试。五个人里唯一真的会去读报错日志的人。能发现林岸藏在注释里的锚点。",
+                    ),
+                    "lao_liu_1998": Echo(
+                        name="老刘",
+                        focus_name="1998·石牌村工作室",
+                        source_attention="studio_1998",
+                        fragment_id="lao_liu_1998",
+                        role="产品",
+                        description="1998年石牌村产品经理（自己不承认）。口头禅：'用户想要什么，用户自己不知道。'唯一在1998年就预测到移动互联网的人。",
+                    ),
+                    "a_ning_1998": Echo(
+                        name="阿柠",
+                        focus_name="1998·石牌村工作室",
+                        source_attention="studio_1998",
+                        fragment_id="a_ning_1998",
+                        role="文档",
+                        description="1998年石牌村文档。每次发布前通宵整理release notes。唯一说'别写我，我又不会死'的人。五人中曾被留空的名字——已被开钰确认。",
+                    ),
+                },
+            ),
         ]
         for focus in known_foci:
             try:
